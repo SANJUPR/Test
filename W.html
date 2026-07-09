@@ -808,6 +808,39 @@
   // ===== INIT =====
   db.collection('admin').doc('credentials').get().then(d=>{if(!d.exists)db.collection('admin').doc('credentials').set({password:ADMIN_PASSWORD});});
   if(!checkSession()){loginOverlay.classList.remove('hidden');enableChat(false);}
+
+// 1. Register Service Worker (on page load)
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js')
+    .then(reg => { console.log('SW registered'); });
+}
+
+// 2. Request permission (after login)
+function enableNotifications() {
+  if (Notification.permission === 'granted') {
+    return true;
+  }
+  Notification.requestPermission();
+}
+
+// 3. Show notification (when message arrives and tab is hidden)
+function notifyNewMessage(sender, message) {
+  if (document.visibilityState === 'visible') return;
+  if (Notification.permission !== 'granted') return;
+  
+  new Notification('CLOUDUAT', {
+    body: `${sender}: ${message.substring(0, 100)}`,
+    icon: '/icon-192x192.png'
+  });
+}
+
+// 4. Check visibility when messages arrive
+// In your message listener:
+if (data.username !== currentUser) {
+  if (document.visibilityState === 'hidden') {
+    notifyNewMessage(data.username, data.text);
+  }
+}
 </script>
 </body>
 </html>
