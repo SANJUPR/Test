@@ -486,7 +486,7 @@
       
       <div><div class="section-title">👤 Members</div><div class="user-list-modal" id="modalUserList" style="max-height:160px;overflow-y:auto;background:#111b26;border-radius:10px;padding:4px;border:1px solid #2f3d52;"><div style="color:#8696a0;text-align:center;padding:12px;">Loading...</div></div></div>
       
-      <div id="adminSection" style="display:none;"><div class="section-title">🔧 Admin</div><div class="form-row"><input type="text" id="newUser" placeholder="Username" /><input type="password" id="newPass" placeholder="Password" /></div><button class="btn-primary" id="addUserBtn" style="width:100%;margin-top:4px;">➕ Add User</button><button class="btn-danger" id="resetAllBtn" style="width:100%;margin-top:4px;">🗑️ Reset All</button></div>
+      <div id="adminSection" style="display:none;"><div class="section-title">🔧 Admin</div><div class="form-row"><input type="text" id="newUser" placeholder="Username" /><input type="password" id="newPass" placeholder="Password" /></div><button class="btn-primary" id="addUserBtn" style="width:100%;margin-top:4px;">➕ Add User</button><button class="btn-danger" id="clearChatBtn" style="width:100%;margin-top:4px;">🗑️ Clear Chat</button><button class="btn-danger" id="resetAllBtn" style="width:100%;margin-top:4px;">💣 Reset All</button></div>
     </div>
     <div class="modal-footer" style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;border-top:1px solid #2f3d52;padding-top:12px;"><button class="btn-outline" id="exportChatBtn">📤 Export Chat</button></div>
   </div>
@@ -596,10 +596,10 @@
 
   // ===== NOTIFICATION FUNCTIONS =====
   
-  // Register Service Worker
+  // Register Service Worker - FIXED PATH
   function registerServiceWorker() {
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js')
+      navigator.serviceWorker.register('/Test/sw.js')
         .then(registration => {
           console.log('✅ Service Worker registered successfully');
           window.swRegistration = registration;
@@ -646,7 +646,7 @@
     });
   }
 
-  // Show notification (works in background!)
+  // Show notification (works in background!) - FIXED
   function showNotification(title, body, sender = null, forceInApp = false) {
     // Check if this is a browser notification or in-app
     const isTabHidden = document.visibilityState === 'hidden';
@@ -656,8 +656,8 @@
       try {
         const options = {
           body: body,
-          icon: '/icon-192x192.png',
-          badge: '/badge-72x72.png',
+          icon: '/Test/icon-192x192.png',
+          badge: '/Test/badge-72x72.png',
           vibrate: [200, 100, 200],
           data: {
             url: window.location.href,
@@ -782,25 +782,23 @@
     if(messageUnsubscribe)messageUnsubscribe(); 
     messageUnsubscribe=db.collection('messages').orderBy('timestamp','asc').onSnapshot(snap=>{ 
       const msgs=[]; 
-      snap.forEach(d=>{ 
-        const data={id:d.id,...d.data()}; 
+      snap.forEach(doc=>{ 
+        const msgData = doc.data();
+        const data = {id:doc.id, ...msgData}; 
         if(!data.scheduledAt || data.scheduledAt.toDate()<=new Date()){ 
           if(!data.deleted)msgs.push(data); 
         } 
-        // Check for new messages for notification
-        if(d._hasPendingWrites === false) {
-          // This is a server-sync'd message (not local)
-          const msgData = d.data();
-          if(msgData.username !== currentUser && !msgData.deleted) {
-            // Show notification for new message
-            const msgText = msgData.text || '📎 Shared a file';
-            const senderName = msgData.username || 'Someone';
-            if(document.visibilityState === 'hidden') {
-              showNotification('CLOUDUAT', `${senderName}: ${msgText.substring(0, 100)}`, senderName);
-            } else {
-              // Show in-app notification
-              showNotification('CLOUDUAT', `${senderName}: ${msgText.substring(0, 100)}`, senderName, true);
-            }
+        // Check for new messages for notification - FIXED
+        if(msgData.username && msgData.username !== currentUser && !msgData.deleted && msgData.timestamp) {
+          // Show notification for new message
+          const msgText = msgData.text || '📎 Shared a file';
+          const senderName = msgData.username || 'Someone';
+          if(document.visibilityState === 'hidden' && Notification.permission === 'granted') {
+            // Browser notification
+            showNotification('CLOUDUAT', `${senderName}: ${msgText.substring(0, 100)}`, senderName);
+          } else {
+            // In-app notification
+            showNotification('CLOUDUAT', `${senderName}: ${msgText.substring(0, 100)}`, senderName, true);
           }
         }
       }); 
