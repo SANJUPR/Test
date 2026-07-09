@@ -554,6 +554,7 @@
   let replyTargetId = null;
   let newMessageCount = 0;
   let isScrolledToBottom = true;
+  let notificationPermission = false;
     
   // DOM refs
   const $ = id => document.getElementById(id);
@@ -574,6 +575,7 @@
   const replyBadge = $('replyBadge'), replyName = $('replyName'), replyClose = $('replyClose');
   const reactionViewerModal = $('reactionViewerModal'), rvContent = $('rvContent'), rvTitle = $('rvTitle'), rvClose = $('rvClose');
   const scrollToBottom = $('scrollToBottom'), newMsgBadge = $('newMsgBadge');
+  const clearChatBtn = $('clearChatBtn');
 
   // ===== HELPERS =====
   function getAvatarColor(u) { if (!u) return '#2f4b7a'; if (u===ADMIN_USERNAME) return '#ffd700'; if(!userColorMap[u]){const c=['#00a884','#4fc3f7','#ffb74d','#81c784','#ff8a65','#ce93d8','#4dd0e1','#ffd54f'];userColorMap[u]=c[Object.keys(userColorMap).length%c.length];}return userColorMap[u]; }
@@ -585,86 +587,440 @@
   function getFileIcon(n){const t=getFileType(n);return {image:'🖼️',video:'🎬',document:'📄',other:'📎'}[t]||'📎';}
 
   // ===== SESSION =====
-  function checkSession(){ const s=localStorage.getItem('clouduat_session'); if(s){ const d=JSON.parse(s); if(d.username && Date.now()-d.timestamp<86400000){ currentUser=d.username; isAdmin=(currentUser===ADMIN_USERNAME); loginOverlay.classList.add('hidden'); enableChat(true); startListening(); updateUserBadge(); if(isAdmin){db.collection('status').doc(currentUser).set({online:true,lastSeen:firebase.firestore.FieldValue.serverTimestamp()});} showNotification('System','👋 Welcome back!'); return true;}} return false; }
+  function checkSession(){ const s=localStorage.getItem('clouduat_session'); if(s){ const d=JSON.parse(s); if(d.username && Date.now()-d.timestamp<86400000){ currentUser=d.username; isAdmin=(currentUser===ADMIN_USERNAME); loginOverlay.classList.add('hidden'); enableChat(true); startListening(); updateUserBadge(); if(isAdmin){db.collection('status').doc(currentUser).set({online:true,lastSeen:firebase.firestore.FieldValue.serverTimestamp()});} showNotification('System','👋 Welcome back!'); // Setup notifications after login
+          setTimeout(() => enableNotifications(), 1500);
+          return true;}} return false; }
   function saveSession(u){localStorage.setItem('clouduat_session',JSON.stringify({username:u,timestamp:Date.now()}));}
   function clearSession(){localStorage.removeItem('clouduat_session');}
   function updateUserBadge(){if(currentUser)currentUserDisplay.textContent=currentUser===ADMIN_USERNAME?'Admin':currentUser;}
 
-  // ===== NOTIFICATION =====
-  function showNotification(sender, msg){ notifSender.textContent=sender; notifMessage.textContent=msg.length>60?msg.substring(0,60)+'...':msg; notifIcon.textContent=sender===ADMIN_USERNAME||sender==='System'?'👑':'💬'; notificationPopup.classList.add('show'); clearTimeout(window.notifTimeout); window.notifTimeout=setTimeout(()=>notificationPopup.classList.remove('show'),5000); }
-  notifClose.onclick=(e)=>{e.stopPropagation();notificationPopup.classList.remove('show');};
-  notificationPopup.onclick=()=>notificationPopup.classList.remove('show');
+  // ===== NOTIFICATION FUNCTIONS =====
+  
+  // Register Service Worker
+  function registerServiceWorker() {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js')
+        .then(registration => {
+          console.log('✅ Service Worker registered successfully');
+          window.swRegistration = registration;
+        })
+        .catch(error => {
+          console.error('❌ Service Worker registration failed:', error);
+          // Service worker failed - we'll still use fallback notifications
+        });
+    } else {
+      console.log('❌ Service Worker not supported in this browser');
+    }
+  }
+
+  // Enable notifications
+  function enableNotifications() {
+    if (!('Notification' in window)) {
+      console.log('❌ Browser doesn\'t support notifications');
+      return false;
+    }
+
+    if (Notification.permission === 'granted') {
+      notificationPermission = true;
+      registerServiceWorker();
+      console.log('✅ Notifications already enabled');
+      return true;
+    }
+
+    if (Notification.permission === 'denied') {
+      console.log('❌ Notifications blocked by user');
+      return false;
+    }
+
+    // Request permission
+    Notification.requestPermission().then(permission => {
+      if (permission === 'granted') {
+        notificationPermission = true;
+        registerServiceWorker();
+        showNotification('System', '🔔 Notifications enabled!', null, true);
+        console.log('✅ Notifications enabled');
+      } else {
+        notificationPermission = false;
+        console.log('❌ Notifications denied');
+      }
+    });
+  }
+
+  // Show notification (works in background!)
+  function showNotification(title, body, sender = null, forceInApp = false) {
+    // Check if this is a browser notification or in-app
+    const isTabHidden = document.visibilityState === 'hidden';
+    
+    // If tab is hidden and notifications are enabled, show browser notification
+    if (isTabHidden && Notification.permission === 'granted' && !forceInApp) {
+      try {
+        const options = {
+          body: body,
+          icon: '/icon-192x192.png',
+          badge: '/badge-72x72.png',
+          vibrate: [200, 100, 200],
+          data: {
+            url: window.location.href,
+            sender: sender,
+            timestamp: Date.now()
+          },
+          actions: [
+            {
+              action: 'open',
+              title: '💬 Open Chat'
+            },
+            {
+              action: 'reply',
+              title: '↩️ Reply'
+            }
+          ]
+        };
+
+        // Use Service Worker if available
+        if (window.swRegistration && window.swRegistration.active) {
+          window.swRegistration.active.postMessage({
+            type: 'SHOW_NOTIFICATION',
+            payload: { title, body, sender }
+          });
+          console.log('🔔 Browser notification shown via Service Worker');
+          return;
+        }
+
+        // Fallback to regular notification
+        const notification = new Notification(title || 'CLOUDUAT', options);
+        notification.onclick = function() {
+          window.focus();
+          notification.close();
+          // Focus the input field
+          setTimeout(() => {
+            if (msgInput) msgInput.focus();
+          }, 500);
+        };
+        console.log('🔔 Browser notification shown (fallback)');
+        return;
+      } catch (e) {
+        console.error('❌ Failed to show browser notification:', e);
+      }
+    }
+
+    // Show in-app notification (bottom-right corner)
+    // This is your existing notification code
+    try {
+      notifSender.textContent = sender || 'System';
+      const msg = body || 'New message';
+      notifMessage.textContent = msg.length > 60 ? msg.substring(0, 60) + '...' : msg;
+      notifIcon.textContent = sender === ADMIN_USERNAME || sender === 'System' ? '👑' : '💬';
+      notificationPopup.classList.add('show');
+      clearTimeout(window.notifTimeout);
+      window.notifTimeout = setTimeout(() => notificationPopup.classList.remove('show'), 5000);
+    } catch (e) {
+      console.error('❌ Failed to show in-app notification:', e);
+    }
+  }
 
   // ===== LOGIN/LOGOUT =====
-  function login(){ const u=loginUser.value.trim(), p=loginPass.value.trim(); if(!u||!p){loginError.textContent='❌ Fill all fields';return;} if(u===ADMIN_USERNAME && p===ADMIN_PASSWORD){ isAdmin=true; currentUser=ADMIN_USERNAME; saveSession(currentUser); loginOverlay.classList.add('hidden'); enableChat(true); startListening(); updateUserBadge(); db.collection('status').doc(currentUser).set({online:true,lastSeen:firebase.firestore.FieldValue.serverTimestamp()}); showNotification('System','👑 Welcome Admin!'); return; } db.collection('users').where('username','==',u).get().then(snap=>{ if(snap.empty){loginError.textContent='❌ User not found';return;} const doc=snap.docs[0], data=doc.data(); if(data.password===p){ currentUser=data.username; isAdmin=(currentUser===ADMIN_USERNAME); saveSession(currentUser); loginOverlay.classList.add('hidden'); enableChat(true); startListening(); updateUserBadge(); db.collection('status').doc(currentUser).set({online:true,lastSeen:firebase.firestore.FieldValue.serverTimestamp()}); showNotification('System',`👋 Welcome ${data.username}!`); } else {loginError.textContent='❌ Invalid password';} }).catch(()=>loginError.textContent='❌ Error'); }
-  function logout(){ if(currentUser)db.collection('status').doc(currentUser).set({online:false,lastSeen:firebase.firestore.FieldValue.serverTimestamp()}); clearSession(); currentUser=null; isAdmin=false; enableChat(false); loginOverlay.classList.remove('hidden'); if(messageUnsubscribe){messageUnsubscribe();messageUnsubscribe=null;} if(usersUnsubscribe){usersUnsubscribe();usersUnsubscribe=null;} if(typingUnsubscribe){typingUnsubscribe();typingUnsubscribe=null;} messageContainer.innerHTML='<div style="color:#8696a0;text-align:center;padding:40px 20px;"><div style="font-size:2.5rem;">👋</div>Welcome to CLOUDUAT<br><span style="font-size:0.8rem;">Start typing...</span></div>'; typingIndicator.textContent=''; memberCount.textContent='Loading...'; unreadBadge.style.display='none'; document.title='CLOUDUAT'; currentUserDisplay.textContent='user'; replyTargetId=null; replyBadge.classList.remove('show'); scrollToBottom.classList.remove('show'); newMsgBadge.style.display='none'; }
+  function login(){ 
+    const u=loginUser.value.trim(), p=loginPass.value.trim(); 
+    if(!u||!p){loginError.textContent='❌ Fill all fields';return;} 
+    if(u===ADMIN_USERNAME && p===ADMIN_PASSWORD){ 
+      isAdmin=true; currentUser=ADMIN_USERNAME; 
+      saveSession(currentUser); 
+      loginOverlay.classList.add('hidden'); 
+      enableChat(true); 
+      startListening(); 
+      updateUserBadge(); 
+      db.collection('status').doc(currentUser).set({online:true,lastSeen:firebase.firestore.FieldValue.serverTimestamp()}); 
+      showNotification('System','👑 Welcome Admin!', null, true);
+      // Enable notifications
+      setTimeout(() => enableNotifications(), 1500);
+      return; 
+    } 
+    db.collection('users').where('username','==',u).get().then(snap=>{ 
+      if(snap.empty){loginError.textContent='❌ User not found';return;} 
+      const doc=snap.docs[0], data=doc.data(); 
+      if(data.password===p){ 
+        currentUser=data.username; 
+        isAdmin=(currentUser===ADMIN_USERNAME); 
+        saveSession(currentUser); 
+        loginOverlay.classList.add('hidden'); 
+        enableChat(true); 
+        startListening(); 
+        updateUserBadge(); 
+        db.collection('status').doc(currentUser).set({online:true,lastSeen:firebase.firestore.FieldValue.serverTimestamp()}); 
+        showNotification('System',`👋 Welcome ${data.username}!`, null, true);
+        // Enable notifications
+        setTimeout(() => enableNotifications(), 1500);
+      } else {loginError.textContent='❌ Invalid password';} 
+    }).catch(()=>loginError.textContent='❌ Error'); 
+  }
+
+  function logout(){ 
+    if(currentUser)db.collection('status').doc(currentUser).set({online:false,lastSeen:firebase.firestore.FieldValue.serverTimestamp()}); 
+    clearSession(); 
+    currentUser=null; 
+    isAdmin=false; 
+    enableChat(false); 
+    loginOverlay.classList.remove('hidden'); 
+    if(messageUnsubscribe){messageUnsubscribe();messageUnsubscribe=null;} 
+    if(usersUnsubscribe){usersUnsubscribe();usersUnsubscribe=null;} 
+    if(typingUnsubscribe){typingUnsubscribe();typingUnsubscribe=null;} 
+    messageContainer.innerHTML='<div style="color:#8696a0;text-align:center;padding:40px 20px;"><div style="font-size:2.5rem;">👋</div>Welcome to CLOUDUAT<br><span style="font-size:0.8rem;">Start typing...</span></div>'; 
+    typingIndicator.textContent=''; 
+    memberCount.textContent='Loading...'; 
+    unreadBadge.style.display='none'; 
+    document.title='CLOUDUAT'; 
+    currentUserDisplay.textContent='user'; 
+    replyTargetId=null; 
+    replyBadge.classList.remove('show'); 
+    scrollToBottom.classList.remove('show'); 
+    newMsgBadge.style.display='none'; 
+  }
   function enableChat(e){msgInput.disabled=!e;sendBtn.disabled=!e;}
 
   // ===== LISTENERS =====
-  function startListening(){ if(messageUnsubscribe)messageUnsubscribe(); messageUnsubscribe=db.collection('messages').orderBy('timestamp','asc').onSnapshot(snap=>{ const msgs=[]; snap.forEach(d=>{ const data={id:d.id,...d.data()}; if(!data.scheduledAt || data.scheduledAt.toDate()<=new Date()){ if(!data.deleted)msgs.push(data); } }); allMessages=msgs; renderMessages(msgs); updateMemberCount(); updateUnreadCount(msgs); updateReadStatus(); updateStats(); }); if(usersUnsubscribe)usersUnsubscribe(); usersUnsubscribe=db.collection('users').onSnapshot(()=>updateMemberCount()); if(typingUnsubscribe)typingUnsubscribe(); typingUnsubscribe=db.collection('typing').orderBy('timestamp','desc').onSnapshot(snap=>{ const now=Date.now(), typingUsers=new Set(); snap.forEach(d=>{ const data=d.data(); if(data.user && data.user!==currentUser && data.timestamp){ const t=data.timestamp.toDate?data.timestamp.toDate().getTime():data.timestamp; if(now-t<3000)typingUsers.add(data.user); } }); if(typingUsers.size>0){ const users=[...typingUsers]; let html=''; users.forEach((user,index)=>{ const color=getAvatarColor(user); html+=`<div class="typing-avatar" style="background:${color}">${getAvatar(user)}</div><span class="typing-name">${user}</span>`; if(index<2){} }); if(users.length>2)html+=`<span>+${users.length-2}</span>`; html+=`<div class="typing-dots"><span></span><span></span><span></span></div>`; typingIndicator.innerHTML=html; } else {typingIndicator.textContent='';} }); }
-  function updateUnreadCount(msgs){ if(!currentUser)return; unreadCount=msgs.filter(m=>m.username!==currentUser && !m.readBy?.includes(currentUser) && !m.deleted).length; if(unreadCount>0){unreadBadge.style.display='block';unreadBadge.textContent=unreadCount;document.title=`(${unreadCount}) CLOUDUAT`;}else{unreadBadge.style.display='none';document.title='CLOUDUAT';} }
-  function updateReadStatus(){ if(!currentUser)return; const unread=allMessages.filter(m=>m.username!==currentUser && !m.readBy?.includes(currentUser) && !m.deleted); unread.forEach(m=>{db.collection('messages').doc(m.id).update({readBy:firebase.firestore.FieldValue.arrayUnion(currentUser)});}); }
-  function updateMemberCount(){ db.collection('users').get().then(snap=>{ const users=[]; snap.forEach(d=>users.push({id:d.id,...d.data()})); db.collection('status').get().then(ss=>{ const st={}; ss.forEach(d=>st[d.id]=d.data()); let online=0; users.forEach(u=>{if(st[u.username]?.online===true)online++;}); memberCount.textContent=`${online} online · ${users.length} members`; if(modalOverlay.style.display==='flex'){modalTotalMembers.textContent=users.length;modalOnlineMembers.textContent=online;} }); }); }
-  function updateStats(){ if(modalOverlay.style.display==='flex')modalTotalMessages.textContent=allMessages.filter(m=>!m.deleted).length; }
+  function startListening(){ 
+    if(messageUnsubscribe)messageUnsubscribe(); 
+    messageUnsubscribe=db.collection('messages').orderBy('timestamp','asc').onSnapshot(snap=>{ 
+      const msgs=[]; 
+      snap.forEach(d=>{ 
+        const data={id:d.id,...d.data()}; 
+        if(!data.scheduledAt || data.scheduledAt.toDate()<=new Date()){ 
+          if(!data.deleted)msgs.push(data); 
+        } 
+        // Check for new messages for notification
+        if(d._hasPendingWrites === false) {
+          // This is a server-sync'd message (not local)
+          const msgData = d.data();
+          if(msgData.username !== currentUser && !msgData.deleted) {
+            // Show notification for new message
+            const msgText = msgData.text || '📎 Shared a file';
+            const senderName = msgData.username || 'Someone';
+            if(document.visibilityState === 'hidden') {
+              showNotification('CLOUDUAT', `${senderName}: ${msgText.substring(0, 100)}`, senderName);
+            } else {
+              // Show in-app notification
+              showNotification('CLOUDUAT', `${senderName}: ${msgText.substring(0, 100)}`, senderName, true);
+            }
+          }
+        }
+      }); 
+      allMessages=msgs; 
+      renderMessages(msgs); 
+      updateMemberCount(); 
+      updateUnreadCount(msgs); 
+      updateReadStatus(); 
+      updateStats(); 
+    }); 
+    if(usersUnsubscribe)usersUnsubscribe(); 
+    usersUnsubscribe=db.collection('users').onSnapshot(()=>updateMemberCount()); 
+    if(typingUnsubscribe)typingUnsubscribe(); 
+    typingUnsubscribe=db.collection('typing').orderBy('timestamp','desc').onSnapshot(snap=>{ 
+      const now=Date.now(), typingUsers=new Set(); 
+      snap.forEach(d=>{ 
+        const data=d.data(); 
+        if(data.user && data.user!==currentUser && data.timestamp){ 
+          const t=data.timestamp.toDate?data.timestamp.toDate().getTime():data.timestamp; 
+          if(now-t<3000)typingUsers.add(data.user); 
+        } 
+      }); 
+      if(typingUsers.size>0){ 
+        const users=[...typingUsers]; 
+        let html=''; 
+        users.forEach((user,index)=>{ 
+          const color=getAvatarColor(user); 
+          html+=`<div class="typing-avatar" style="background:${color}">${getAvatar(user)}</div><span class="typing-name">${user}</span>`; 
+          if(index<2){} 
+        }); 
+        if(users.length>2)html+=`<span>+${users.length-2}</span>`; 
+        html+=`<div class="typing-dots"><span></span><span></span><span></span></div>`; 
+        typingIndicator.innerHTML=html; 
+      } else {typingIndicator.textContent='';} 
+    }); 
+  }
+
+  function updateUnreadCount(msgs){ 
+    if(!currentUser)return; 
+    unreadCount=msgs.filter(m=>m.username!==currentUser && !m.readBy?.includes(currentUser) && !m.deleted).length; 
+    if(unreadCount>0){unreadBadge.style.display='block';unreadBadge.textContent=unreadCount;document.title=`(${unreadCount}) CLOUDUAT`;}else{unreadBadge.style.display='none';document.title='CLOUDUAT';} 
+  }
+
+  function updateReadStatus(){ 
+    if(!currentUser)return; 
+    const unread=allMessages.filter(m=>m.username!==currentUser && !m.readBy?.includes(currentUser) && !m.deleted); 
+    unread.forEach(m=>{db.collection('messages').doc(m.id).update({readBy:firebase.firestore.FieldValue.arrayUnion(currentUser)});}); 
+  }
+
+  function updateMemberCount(){ 
+    db.collection('users').get().then(snap=>{ 
+      const users=[]; 
+      snap.forEach(d=>users.push({id:d.id,...d.data()})); 
+      db.collection('status').get().then(ss=>{ 
+        const st={}; 
+        ss.forEach(d=>st[d.id]=d.data()); 
+        let online=0; 
+        users.forEach(u=>{if(st[u.username]?.online===true)online++;}); 
+        memberCount.textContent=`${online} online · ${users.length} members`; 
+        if(modalOverlay.style.display==='flex'){modalTotalMembers.textContent=users.length;modalOnlineMembers.textContent=online;} 
+      }); 
+    }); 
+  }
+
+  function updateStats(){ 
+    if(modalOverlay.style.display==='flex')modalTotalMessages.textContent=allMessages.filter(m=>!m.deleted).length; 
+  }
 
   // ===== SCROLL TO BOTTOM =====
-  function checkScrollPosition(){ const atBottom=messageContainer.scrollHeight-messageContainer.scrollTop<=messageContainer.clientHeight+50; if(atBottom){ isScrolledToBottom=true; scrollToBottom.classList.remove('show'); newMsgBadge.style.display='none'; newMessageCount=0; } else { isScrolledToBottom=false; if(newMessageCount>0){ scrollToBottom.classList.add('show'); newMsgBadge.textContent=newMessageCount; newMsgBadge.style.display='flex'; } } }
-  function scrollToBottomNow(){ messageContainer.scrollTo({top:messageContainer.scrollHeight,behavior:'smooth'}); isScrolledToBottom=true; scrollToBottom.classList.remove('show'); newMsgBadge.style.display='none'; newMessageCount=0; }
+  function checkScrollPosition(){ 
+    const atBottom=messageContainer.scrollHeight-messageContainer.scrollTop<=messageContainer.clientHeight+50; 
+    if(atBottom){ 
+      isScrolledToBottom=true; 
+      scrollToBottom.classList.remove('show'); 
+      newMsgBadge.style.display='none'; 
+      newMessageCount=0; 
+    } else { 
+      isScrolledToBottom=false; 
+      if(newMessageCount>0){ 
+        scrollToBottom.classList.add('show'); 
+        newMsgBadge.textContent=newMessageCount; 
+        newMsgBadge.style.display='flex'; 
+      } 
+    } 
+  }
+  function scrollToBottomNow(){ 
+    messageContainer.scrollTo({top:messageContainer.scrollHeight,behavior:'smooth'}); 
+    isScrolledToBottom=true; 
+    scrollToBottom.classList.remove('show'); 
+    newMsgBadge.style.display='none'; 
+    newMessageCount=0; 
+  }
   messageContainer.addEventListener('scroll',checkScrollPosition);
   scrollToBottom.onclick=scrollToBottomNow;
 
-  // ===== RENDER MESSAGES =====
-  function renderMessages(messages){ const filtered=messages.filter(m=>!m.deleted); const wasAtBottom=messageContainer.scrollHeight-messageContainer.scrollTop<=messageContainer.clientHeight+100; if(!filtered.length){messageContainer.innerHTML='<div style="color:#8696a0;text-align:center;padding:40px;">No messages</div>';return;} let html='', lastDate=''; filtered.forEach(m=>{ const isOwn=m.username===currentUser; const msgDate=formatDate(m.timestamp); const color=getAvatarColor(m.username); let displayText=escapeHtml(m.text); const mentionRegex=/@(\w+)/g; displayText=displayText.replace(mentionRegex,(match,uname)=>{ if(uname===currentUser || uname===ADMIN_USERNAME)return`<span class="mention-highlight">${match}</span>`; return match; }); const isMentioned = m.text && (m.text.includes(`@${currentUser}`) || m.text.includes(`@${ADMIN_USERNAME}`));
-    if(msgDate!==lastDate){lastDate=msgDate;html+=`<div style="text-align:center;padding:6px 0;color:#8696a0;font-size:0.65rem;">${msgDate}</div>`;} let readHtml=''; if(isOwn && m.readBy?.length>0){const readers=m.readBy.filter(r=>r!==currentUser); readHtml=readers.length>0?`<span class="read-status">✓ Read by ${readers.length}</span>`:`<span class="read-status">✓ Sent</span>`;} else if(!isOwn){readHtml=m.readBy?.includes(currentUser)?`<span class="read-status" style="color:#00a884;">✓ Read</span>`:`<span class="read-status">✓ Delivered</span>`;} let reactionsHtml=''; if(m.reactions){ const rMap={}; Object.values(m.reactions).forEach(r=>{rMap[r]=(rMap[r]||0)+1;}); reactionsHtml=Object.entries(rMap).map(([emoji,count])=>`<span class="reaction" onclick="addReaction('${m.id}','${emoji}')" oncontextmenu="event.preventDefault();showReactionViewer('${m.id}','${emoji}')">${emoji} <span class="reaction-count">${count}</span><span class="reaction-tooltip">${getReactionUsers(m.id, emoji)}</span></span>`).join(''); } 
-    let replyHtml='';
-    if(m.replyTo){ const original=allMessages.find(x=>x.id===m.replyTo); if(original){ replyHtml=`<div class="reply-indicator" onclick="scrollToMessage('${original.id}')">↩️ <span class="reply-sender">${original.username}</span>: <span class="reply-text">${escapeHtml(original.text.substring(0,50))}${original.text.length>50?'...':''}</span></div>`; } }
-    
-    // File preview
-    let fileHtml='';
-    if(m.file){ 
-      const fileType=getFileType(m.file.name);
-      if(fileType==='image'){
-        fileHtml=`<div class="file-preview" onclick="previewFile('${m.id}')"><img src="${m.file.data}" alt="${m.file.name}" /><span class="file-name">${m.file.name}</span></div>`;
-      } else if(fileType==='video'){
-        fileHtml=`<div class="file-preview" onclick="previewFile('${m.id}')"><video src="${m.file.data}" style="max-width:120px;max-height:80px;border-radius:4px;object-fit:cover;" muted></video><span class="file-name">${m.file.name}</span></div>`;
+  // ===== VISIBILITY CHANGE HANDLER =====
+  document.addEventListener('visibilitychange', function() {
+    if (document.visibilityState === 'visible') {
+      console.log('👀 Tab is now visible');
+      // Update unread count on title
+      if (unreadBadge && unreadBadge.textContent !== '0' && unreadBadge.style.display !== 'none') {
+        document.title = `(${unreadBadge.textContent}) CLOUDUAT`;
       } else {
-        fileHtml=`<div class="file-preview" onclick="previewFile('${m.id}')"><span class="file-icon">${getFileIcon(m.file.name)}</span><span class="file-name">${m.file.name}</span></div>`;
+        document.title = 'CLOUDUAT';
       }
+    } else {
+      console.log('🔇 Tab is now hidden - notifications will show for new messages');
     }
-    
-    let msgClasses = `message-item ${isOwn?'sent':'received'}`;
-    if(isMentioned) msgClasses += ' mentioned';
-    html+=`<div class="${msgClasses}" data-id="${m.id}">${!isOwn?`<div class="sender-name" onclick="insertMention('${m.username}')" style="cursor:pointer;color:${color}">${m.username}</div>`:''}${replyHtml}<div class="text">${displayText}</div>${fileHtml}<div class="time">${getTime(m.timestamp)} ${readHtml}</div>${reactionsHtml?`<div class="reactions">${reactionsHtml}</div>`:''}<div class="quick-reactions"><span onclick="addReaction('${m.id}','❤️')">❤️</span><span onclick="addReaction('${m.id}','😂')">😂</span><span onclick="addReaction('${m.id}','😮')">😮</span><span onclick="addReaction('${m.id}','😢')">😢</span><span onclick="addReaction('${m.id}','👍')">👍</span></div></div>`; }); messageContainer.innerHTML=html; 
-    if(wasAtBottom || isScrolledToBottom){ requestAnimationFrame(()=>{messageContainer.scrollTop=messageContainer.scrollHeight; isScrolledToBottom=true; scrollToBottom.classList.remove('show'); newMsgBadge.style.display='none';}); } else { newMessageCount++; if(newMessageCount>0){ scrollToBottom.classList.add('show'); newMsgBadge.textContent=newMessageCount; newMsgBadge.style.display='flex'; } } }
+  });
+
+  // ===== RENDER MESSAGES =====
+  function renderMessages(messages){ 
+    const filtered=messages.filter(m=>!m.deleted); 
+    const wasAtBottom=messageContainer.scrollHeight-messageContainer.scrollTop<=messageContainer.clientHeight+100; 
+    if(!filtered.length){messageContainer.innerHTML='<div style="color:#8696a0;text-align:center;padding:40px;">No messages</div>';return;} 
+    let html='', lastDate=''; 
+    filtered.forEach(m=>{ 
+      const isOwn=m.username===currentUser; 
+      const msgDate=formatDate(m.timestamp); 
+      const color=getAvatarColor(m.username); 
+      let displayText=escapeHtml(m.text); 
+      const mentionRegex=/@(\w+)/g; 
+      displayText=displayText.replace(mentionRegex,(match,uname)=>{ 
+        if(uname===currentUser || uname===ADMIN_USERNAME)return`<span class="mention-highlight">${match}</span>`; 
+        return match; 
+      }); 
+      const isMentioned = m.text && (m.text.includes(`@${currentUser}`) || m.text.includes(`@${ADMIN_USERNAME}`));
+      if(msgDate!==lastDate){lastDate=msgDate;html+=`<div style="text-align:center;padding:6px 0;color:#8696a0;font-size:0.65rem;">${msgDate}</div>`;} 
+      let readHtml=''; 
+      if(isOwn && m.readBy?.length>0){const readers=m.readBy.filter(r=>r!==currentUser); readHtml=readers.length>0?`<span class="read-status">✓ Read by ${readers.length}</span>`:`<span class="read-status">✓ Sent</span>`;} 
+      else if(!isOwn){readHtml=m.readBy?.includes(currentUser)?`<span class="read-status" style="color:#00a884;">✓ Read</span>`:`<span class="read-status">✓ Delivered</span>`;} 
+      let reactionsHtml=''; 
+      if(m.reactions){ 
+        const rMap={}; 
+        Object.values(m.reactions).forEach(r=>{rMap[r]=(rMap[r]||0)+1;}); 
+        reactionsHtml=Object.entries(rMap).map(([emoji,count])=>`<span class="reaction" onclick="addReaction('${m.id}','${emoji}')" oncontextmenu="event.preventDefault();showReactionViewer('${m.id}','${emoji}')">${emoji} <span class="reaction-count">${count}</span><span class="reaction-tooltip">${getReactionUsers(m.id, emoji)}</span></span>`).join(''); 
+      } 
+      let replyHtml='';
+      if(m.replyTo){ const original=allMessages.find(x=>x.id===m.replyTo); if(original){ replyHtml=`<div class="reply-indicator" onclick="scrollToMessage('${original.id}')">↩️ <span class="reply-sender">${original.username}</span>: <span class="reply-text">${escapeHtml(original.text.substring(0,50))}${original.text.length>50?'...':''}</span></div>`; } }
+      
+      let fileHtml='';
+      if(m.file){ 
+        const fileType=getFileType(m.file.name);
+        if(fileType==='image'){
+          fileHtml=`<div class="file-preview" onclick="previewFile('${m.id}')"><img src="${m.file.data}" alt="${m.file.name}" /><span class="file-name">${m.file.name}</span></div>`;
+        } else if(fileType==='video'){
+          fileHtml=`<div class="file-preview" onclick="previewFile('${m.id}')"><video src="${m.file.data}" style="max-width:120px;max-height:80px;border-radius:4px;object-fit:cover;" muted></video><span class="file-name">${m.file.name}</span></div>`;
+        } else {
+          fileHtml=`<div class="file-preview" onclick="previewFile('${m.id}')"><span class="file-icon">${getFileIcon(m.file.name)}</span><span class="file-name">${m.file.name}</span></div>`;
+        }
+      }
+      
+      let msgClasses = `message-item ${isOwn?'sent':'received'}`;
+      if(isMentioned) msgClasses += ' mentioned';
+      html+=`<div class="${msgClasses}" data-id="${m.id}">${!isOwn?`<div class="sender-name" onclick="insertMention('${m.username}')" style="cursor:pointer;color:${color}">${m.username}</div>`:''}${replyHtml}<div class="text">${displayText}</div>${fileHtml}<div class="time">${getTime(m.timestamp)} ${readHtml}</div>${reactionsHtml?`<div class="reactions">${reactionsHtml}</div>`:''}<div class="quick-reactions"><span onclick="addReaction('${m.id}','❤️')">❤️</span><span onclick="addReaction('${m.id}','😂')">😂</span><span onclick="addReaction('${m.id}','😮')">😮</span><span onclick="addReaction('${m.id}','😢')">😢</span><span onclick="addReaction('${m.id}','👍')">👍</span></div></div>`; 
+    }); 
+    messageContainer.innerHTML=html; 
+    if(wasAtBottom || isScrolledToBottom){ 
+      requestAnimationFrame(()=>{messageContainer.scrollTop=messageContainer.scrollHeight; isScrolledToBottom=true; scrollToBottom.classList.remove('show'); newMsgBadge.style.display='none';}); 
+    } else { 
+      newMessageCount++; 
+      if(newMessageCount>0){ 
+        scrollToBottom.classList.add('show'); 
+        newMsgBadge.textContent=newMessageCount; 
+        newMsgBadge.style.display='flex'; 
+      } 
+    } 
+  }
 
   // ===== GET REACTION USERS =====
-  function getReactionUsers(messageId, emoji){ const m=allMessages.find(x=>x.id===messageId); if(!m||!m.reactions)return ''; const users=Object.entries(m.reactions).filter(([u,e])=>e===emoji).map(([u])=>u); return users.length ? users.join(', ') : ''; }
+  function getReactionUsers(messageId, emoji){ 
+    const m=allMessages.find(x=>x.id===messageId); 
+    if(!m||!m.reactions)return ''; 
+    const users=Object.entries(m.reactions).filter(([u,e])=>e===emoji).map(([u])=>u); 
+    return users.length ? users.join(', ') : ''; 
+  }
 
   // ===== REACTION VIEWER =====
-  window.showReactionViewer=function(messageId, emoji){ const m=allMessages.find(x=>x.id===messageId); if(!m||!m.reactions)return; const users=Object.entries(m.reactions).filter(([u,e])=>e===emoji).map(([u])=>u); rvTitle.textContent=`${emoji} · ${users.length} ${users.length===1?'person':'people'}`; rvContent.innerHTML=users.map(u=>`<div class="rv-item"><span class="rv-emoji">👤</span><span class="rv-users">${u}</span></div>`).join(''); reactionViewerModal.classList.add('open'); };
+  window.showReactionViewer=function(messageId, emoji){ 
+    const m=allMessages.find(x=>x.id===messageId); 
+    if(!m||!m.reactions)return; 
+    const users=Object.entries(m.reactions).filter(([u,e])=>e===emoji).map(([u])=>u); 
+    rvTitle.textContent=`${emoji} · ${users.length} ${users.length===1?'person':'people'}`; 
+    rvContent.innerHTML=users.map(u=>`<div class="rv-item"><span class="rv-emoji">👤</span><span class="rv-users">${u}</span></div>`).join(''); 
+    reactionViewerModal.classList.add('open'); 
+  };
   rvClose.onclick=()=>reactionViewerModal.classList.remove('open');
   reactionViewerModal.onclick=e=>{if(e.target===reactionViewerModal)reactionViewerModal.classList.remove('open');};
 
   // ===== SCROLL TO MESSAGE =====
-  window.scrollToMessage=function(id){ const el=document.querySelector(`.message-item[data-id="${id}"]`); if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.transform='scale(1.02)';setTimeout(()=>el.style.transform='',1000);} };
+  window.scrollToMessage=function(id){ 
+    const el=document.querySelector(`.message-item[data-id="${id}"]`); 
+    if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.transform='scale(1.02)';setTimeout(()=>el.style.transform='',1000);} 
+  };
 
   // ===== REACTIONS =====
-  window.addReaction=function(id,emoji){ if(!currentUser)return; const ref=db.collection('messages').doc(id); ref.update({[`reactions.${currentUser}`]:emoji}).catch(()=>ref.set({[`reactions.${currentUser}`]:emoji},{merge:true})); };
+  window.addReaction=function(id,emoji){ 
+    if(!currentUser)return; 
+    const ref=db.collection('messages').doc(id); 
+    ref.update({[`reactions.${currentUser}`]:emoji}).catch(()=>ref.set({[`reactions.${currentUser}`]:emoji},{merge:true})); 
+  };
 
   // ===== MENTION =====
-  window.insertMention=function(u){ msgInput.value+=`@${u} `; msgInput.focus(); mentionList.classList.add('hidden'); mentionList.innerHTML=''; };
+  window.insertMention=function(u){ 
+    msgInput.value+=`@${u} `; 
+    msgInput.focus(); 
+    mentionList.classList.add('hidden'); 
+    mentionList.innerHTML=''; 
+  };
+  
   function showMentionList(){ 
     db.collection('users').get().then(snap=>{ 
       mentionList.innerHTML='<div class="mention-header">👥 Mention a user</div>'; 
       let has=false; 
-      // Add ADMIN to the list
       const usersList = [];
       snap.forEach(d=>{ 
         const data=d.data(); 
         if(data.username===currentUser)return; 
         usersList.push(data.username);
       });
-      // Always include ADMIN if not current user
       if(ADMIN_USERNAME !== currentUser && !usersList.includes(ADMIN_USERNAME)){
         usersList.push(ADMIN_USERNAME);
       }
@@ -680,7 +1036,6 @@
       if(!has){const d=document.createElement('div');d.className='no-result';d.textContent='👤 No other users';mentionList.appendChild(d);} 
       mentionList.classList.remove('hidden'); 
     }).catch(()=>{
-      // Fallback - at least show ADMIN
       mentionList.innerHTML='<div class="mention-header">👥 Mention a user</div>';
       const div=document.createElement('div'); 
       div.className='mention-item'; 
@@ -691,8 +1046,50 @@
     }); 
   }
 
+  // ===== CLEAR CHAT =====
+  function clearChat(){
+    if(!isAdmin){
+      showNotification('System','⛔ Only admin can clear chat', null, true);
+      return;
+    }
+    if(!confirm('⚠️ Are you sure you want to clear ALL chat messages? This action cannot be undone!')){
+      return;
+    }
+    db.collection('messages').get().then(snap=>{
+      const batch = db.batch();
+      snap.docs.forEach(doc => {
+        batch.delete(doc.ref);
+      });
+      return batch.commit();
+    }).then(()=>{
+      showNotification('System',`🗑️ All chat cleared by ${currentUser}`, null, true);
+      allMessages = [];
+      renderMessages([]);
+    }).catch(err=>{
+      console.error('Error clearing chat:', err);
+      showNotification('System','❌ Failed to clear chat', null, true);
+    });
+  }
+
   // ===== SEND MESSAGE =====
-  function sendMessage(text=null, fileData=null, scheduledTime=null){ if(!currentUser)return; if(!text && !fileData){text=msgInput.value.trim(); if(!text)return;} const msg={username:currentUser,text:text||'',timestamp:firebase.firestore.FieldValue.serverTimestamp(),readBy:[currentUser]}; if(fileData)msg.file=fileData; if(scheduledTime)msg.scheduledAt=firebase.firestore.Timestamp.fromDate(scheduledTime); if(replyTargetId){ msg.replyTo=replyTargetId; replyTargetId=null; replyBadge.classList.remove('show'); replyName.textContent=''; msgInput.placeholder='Type a message...'; } db.collection('messages').add(msg); msgInput.value=''; typingIndicator.textContent=''; emojiPicker.classList.remove('open'); }
+  function sendMessage(text=null, fileData=null, scheduledTime=null){ 
+    if(!currentUser)return; 
+    if(!text && !fileData){text=msgInput.value.trim(); if(!text)return;} 
+    const msg={username:currentUser,text:text||'',timestamp:firebase.firestore.FieldValue.serverTimestamp(),readBy:[currentUser]}; 
+    if(fileData)msg.file=fileData; 
+    if(scheduledTime)msg.scheduledAt=firebase.firestore.Timestamp.fromDate(scheduledTime); 
+    if(replyTargetId){ 
+      msg.replyTo=replyTargetId; 
+      replyTargetId=null; 
+      replyBadge.classList.remove('show'); 
+      replyName.textContent=''; 
+      msgInput.placeholder='Type a message...'; 
+    } 
+    db.collection('messages').add(msg); 
+    msgInput.value=''; 
+    typingIndicator.textContent=''; 
+    emojiPicker.classList.remove('open'); 
+  }
 
   // ===== FILE & CAMERA =====
   fileBtn.onclick=()=>fileInput.click();
@@ -736,25 +1133,96 @@
 
   // ===== THEMES =====
   const themeMap={dark:'', light:'light-theme', blue:'theme-blue', green:'theme-green', purple:'theme-purple'};
-  function setTheme(t){ document.body.className=document.body.className.split(' ').filter(c=>!['light-theme','theme-blue','theme-green','theme-purple'].includes(c)).join(''); if(t!=='dark')document.body.classList.add(themeMap[t]); localStorage.setItem('chat_theme',t); document.querySelectorAll('.theme-opt').forEach(el=>el.classList.toggle('active',el.dataset.theme===t)); }
+  function setTheme(t){ 
+    document.body.className=document.body.className.split(' ').filter(c=>!['light-theme','theme-blue','theme-green','theme-purple'].includes(c)).join(''); 
+    if(t!=='dark')document.body.classList.add(themeMap[t]); 
+    localStorage.setItem('chat_theme',t); 
+    document.querySelectorAll('.theme-opt').forEach(el=>el.classList.toggle('active',el.dataset.theme===t)); 
+  }
   document.querySelectorAll('.theme-opt').forEach(el=>el.onclick=()=>setTheme(el.dataset.theme));
-  const savedTheme=localStorage.getItem('chat_theme')||'dark'; setTheme(savedTheme);
+  const savedTheme=localStorage.getItem('chat_theme')||'dark'; 
+  setTheme(savedTheme);
 
   // ===== SCHEDULE =====
-  scheduleBtn.onclick=()=>{ if(!currentUser)return; const t=msgInput.value.trim(); if(!t){alert('Type a message');return;} const d=new Date(); d.setHours(d.getHours()+1); scheduleDateTime.value=d.toISOString().slice(0,16); scheduleModal.classList.add('open'); };
-  scheduleConfirm.onclick=()=>{ const dt=new Date(scheduleDateTime.value); if(isNaN(dt)||dt<=new Date()){alert('Select future time');return;} sendMessage(scheduleDateTime.value,null,dt); scheduleModal.classList.remove('open'); showNotification('System','📅 Scheduled'); };
+  scheduleBtn.onclick=()=>{ 
+    if(!currentUser)return; 
+    const t=msgInput.value.trim(); 
+    if(!t){alert('Type a message');return;} 
+    const d=new Date(); 
+    d.setHours(d.getHours()+1); 
+    scheduleDateTime.value=d.toISOString().slice(0,16); 
+    scheduleModal.classList.add('open'); 
+  };
+  scheduleConfirm.onclick=()=>{ 
+    const dt=new Date(scheduleDateTime.value); 
+    if(isNaN(dt)||dt<=new Date()){alert('Select future time');return;} 
+    sendMessage(scheduleDateTime.value,null,dt); 
+    scheduleModal.classList.remove('open'); 
+    showNotification('System','📅 Scheduled', null, true); 
+  };
   scheduleCancel.onclick=()=>scheduleModal.classList.remove('open');
 
   // ===== GALLERY =====
-  galleryBtn.onclick=()=>{ const media=allMessages.filter(m=>m.file && !m.deleted && ['image','video'].includes(getFileType(m.file.name))); if(!media.length){galleryGrid.innerHTML='<div class="no-media">No media</div>';}else{ let html=''; media.forEach(m=>{ const type=getFileType(m.file.name); html+=`<div class="gallery-item" style="aspect-ratio:1;border-radius:6px;overflow:hidden;cursor:pointer;background:#1f2a3a;position:relative;" onclick="previewFile('${m.id}')">${type==='image'?`<img src="${m.file.data}" style="width:100%;height:100%;object-fit:cover;" />`:`<video src="${m.file.data}" style="width:100%;height:100%;object-fit:cover;" muted></video>`}<span style="position:absolute;bottom:4px;right:4px;background:rgba(0,0,0,0.7);color:#fff;padding:1px 6px;border-radius:8px;font-size:0.5rem;">${type}</span></div>`; }); galleryGrid.innerHTML=html; } galleryModal.classList.add('open'); };
+  galleryBtn.onclick=()=>{ 
+    const media=allMessages.filter(m=>m.file && !m.deleted && ['image','video'].includes(getFileType(m.file.name))); 
+    if(!media.length){galleryGrid.innerHTML='<div class="no-media">No media</div>';}else{ 
+      let html=''; 
+      media.forEach(m=>{ 
+        const type=getFileType(m.file.name); 
+        html+=`<div class="gallery-item" style="aspect-ratio:1;border-radius:6px;overflow:hidden;cursor:pointer;background:#1f2a3a;position:relative;" onclick="previewFile('${m.id}')">${type==='image'?`<img src="${m.file.data}" style="width:100%;height:100%;object-fit:cover;" />`:`<video src="${m.file.data}" style="width:100%;height:100%;object-fit:cover;" muted></video>`}<span style="position:absolute;bottom:4px;right:4px;background:rgba(0,0,0,0.7);color:#fff;padding:1px 6px;border-radius:8px;font-size:0.5rem;">${type}</span></div>`; 
+      }); 
+      galleryGrid.innerHTML=html; 
+    } 
+    galleryModal.classList.add('open'); 
+  };
   galleryClose.onclick=()=>galleryModal.classList.remove('open');
 
   // ===== DOC PREVIEW =====
-  window.previewFile=function(id){ const m=allMessages.find(x=>x.id===id); if(!m||!m.file)return; const f=m.file, type=getFileType(f.name); docPreviewTitle.textContent=`📄 ${f.name}`; docPreviewContent.innerHTML=''; if(type==='image'){docPreviewContent.innerHTML=`<img src="${f.data}" style="max-width:100%;max-height:80vh;border-radius:6px;" />`;} else if(type==='video'){docPreviewContent.innerHTML=`<video src="${f.data}" style="max-width:100%;max-height:80vh;border-radius:6px;" controls></video>`;} else if(f.name.toLowerCase().endsWith('.pdf')){ const task=pdfjsLib.getDocument(f.data); task.promise.then(pdf=>{ docPreviewContent.innerHTML='<div style="width:100%;max-height:80vh;overflow-y:auto;background:white;border-radius:6px;padding:10px;">'; for(let i=1;i<=pdf.numPages;i++){ pdf.getPage(i).then(page=>{ const scale=1.2, view=page.getViewport({scale}), canvas=document.createElement('canvas'), ctx=canvas.getContext('2d'); canvas.height=view.height;canvas.width=view.width; page.render({canvasContext:ctx,viewport:view}); docPreviewContent.appendChild(canvas); }); } docPreviewContent.innerHTML+='</div>'; }).catch(()=>{docPreviewContent.innerHTML=`<div><span style="font-size:3rem;">📄</span><div>${f.name}</div><a href="${f.data}" download="${f.name}" style="color:#00a884;">Download</a></div>`;}); } else {docPreviewContent.innerHTML=`<div><span style="font-size:3rem;">${getFileIcon(f.name)}</span><div>${f.name}</div><a href="${f.data}" download="${f.name}" style="color:#00a884;">Download</a></div>`;} docPreviewModal.classList.add('open'); };
+  window.previewFile=function(id){ 
+    const m=allMessages.find(x=>x.id===id); 
+    if(!m||!m.file)return; 
+    const f=m.file, type=getFileType(f.name); 
+    docPreviewTitle.textContent=`📄 ${f.name}`; 
+    docPreviewContent.innerHTML=''; 
+    if(type==='image'){docPreviewContent.innerHTML=`<img src="${f.data}" style="max-width:100%;max-height:80vh;border-radius:6px;" />`;} 
+    else if(type==='video'){docPreviewContent.innerHTML=`<video src="${f.data}" style="max-width:100%;max-height:80vh;border-radius:6px;" controls></video>`;} 
+    else if(f.name.toLowerCase().endsWith('.pdf')){ 
+      const task=pdfjsLib.getDocument(f.data); 
+      task.promise.then(pdf=>{ 
+        docPreviewContent.innerHTML='<div style="width:100%;max-height:80vh;overflow-y:auto;background:white;border-radius:6px;padding:10px;">'; 
+        for(let i=1;i<=pdf.numPages;i++){ 
+          pdf.getPage(i).then(page=>{ 
+            const scale=1.2, view=page.getViewport({scale}), canvas=document.createElement('canvas'), ctx=canvas.getContext('2d'); 
+            canvas.height=view.height;canvas.width=view.width; 
+            page.render({canvasContext:ctx,viewport:view}); 
+            docPreviewContent.appendChild(canvas); 
+          }); 
+        } 
+        docPreviewContent.innerHTML+='</div>'; 
+      }).catch(()=>{docPreviewContent.innerHTML=`<div><span style="font-size:3rem;">📄</span><div>${f.name}</div><a href="${f.data}" download="${f.name}" style="color:#00a884;">Download</a></div>`;}); 
+    } else {docPreviewContent.innerHTML=`<div><span style="font-size:3rem;">${getFileIcon(f.name)}</span><div>${f.name}</div><a href="${f.data}" download="${f.name}" style="color:#00a884;">Download</a></div>`;} 
+    docPreviewModal.classList.add('open'); 
+  };
   docPreviewClose.onclick=()=>docPreviewModal.classList.remove('open');
 
   // ===== CONTEXT MENU =====
-  messageContainer.oncontextmenu=e=>{ const item=e.target.closest('.message-item'); if(item){ contextTargetId=item.dataset.id; const m=allMessages.find(x=>x.id===contextTargetId); if(!m)return; const isOwn=m.username===currentUser; ctxEdit.style.display=isOwn?'flex':'none'; ctxDelete.style.display=(isOwn||isAdmin)?'flex':'none'; if(m.readBy){const r=m.readBy.filter(x=>x!==currentUser); ctxReadReceipts.querySelector('.sub').textContent=r.length?`(${r.length})`:'';} else ctxReadReceipts.querySelector('.sub').textContent=''; contextMenu.style.left=Math.min(e.clientX,window.innerWidth-200)+'px'; contextMenu.style.top=Math.min(e.clientY,window.innerHeight-220)+'px'; contextMenu.classList.add('open'); e.preventDefault(); } };
+  messageContainer.oncontextmenu=e=>{ 
+    const item=e.target.closest('.message-item'); 
+    if(item){ 
+      contextTargetId=item.dataset.id; 
+      const m=allMessages.find(x=>x.id===contextTargetId); 
+      if(!m)return; 
+      const isOwn=m.username===currentUser; 
+      ctxEdit.style.display=isOwn?'flex':'none'; 
+      ctxDelete.style.display=(isOwn||isAdmin)?'flex':'none'; 
+      if(m.readBy){const r=m.readBy.filter(x=>x!==currentUser); ctxReadReceipts.querySelector('.sub').textContent=r.length?`(${r.length})`:'';} 
+      else ctxReadReceipts.querySelector('.sub').textContent=''; 
+      contextMenu.style.left=Math.min(e.clientX,window.innerWidth-200)+'px'; 
+      contextMenu.style.top=Math.min(e.clientY,window.innerHeight-220)+'px'; 
+      contextMenu.classList.add('open'); 
+      e.preventDefault(); 
+    } 
+  };
   document.addEventListener('click', function(e) { 
     if(!contextMenu.contains(e.target)){ 
       contextMenu.classList.remove('open'); 
@@ -763,31 +1231,151 @@
   messageContainer.addEventListener('scroll', function() { 
     contextMenu.classList.remove('open'); 
   });
-  ctxReply.onclick=()=>{ const m=allMessages.find(x=>x.id===contextTargetId); if(m){ replyTargetId=contextTargetId; replyName.textContent=m.username; replyBadge.classList.add('show'); msgInput.placeholder=`↩️ Reply to ${m.username}`; msgInput.focus(); } contextMenu.classList.remove('open'); };
-  replyClose.onclick=()=>{ replyTargetId=null; replyBadge.classList.remove('show'); msgInput.placeholder='Type a message...'; };
-  ctxEdit.onclick=()=>{ const m=allMessages.find(x=>x.id===contextTargetId); if(m && m.username===currentUser){ const t=prompt('Edit:',m.text); if(t?.trim())db.collection('messages').doc(contextTargetId).update({text:t.trim(),edited:true}); } contextMenu.classList.remove('open'); };
-  ctxForward.onclick=()=>{ const m=allMessages.find(x=>x.id===contextTargetId); if(m){ if(m.file){sendMessage(`📨 Forwarded from ${m.username}: ${m.text}`,m.file);} else {msgInput.value=`📨 Forwarded from ${m.username}: ${m.text}`;msgInput.focus();} } contextMenu.classList.remove('open'); };
-  ctxCopy.onclick=()=>{ const m=allMessages.find(x=>x.id===contextTargetId); if(m){navigator.clipboard.writeText(m.text).then(()=>showNotification('System','📋 Copied'));} contextMenu.classList.remove('open'); };
-  ctxReadReceipts.onclick=()=>{ const m=allMessages.find(x=>x.id===contextTargetId); if(m){const r=m.readBy?m.readBy.filter(x=>x!==currentUser):[]; alert(r.length?`Read by:\n${r.join('\n')}`:'No one read yet');} contextMenu.classList.remove('open'); };
-  ctxDelete.onclick=()=>{ const m=allMessages.find(x=>x.id===contextTargetId); if(m && (m.username===currentUser||isAdmin)){ if(confirm('Delete?'))db.collection('messages').doc(contextTargetId).update({deleted:true,deletedAt:firebase.firestore.FieldValue.serverTimestamp()}); } contextMenu.classList.remove('open'); };
+  ctxReply.onclick=()=>{ 
+    const m=allMessages.find(x=>x.id===contextTargetId); 
+    if(m){ 
+      replyTargetId=contextTargetId; 
+      replyName.textContent=m.username; 
+      replyBadge.classList.add('show'); 
+      msgInput.placeholder=`↩️ Reply to ${m.username}`; 
+      msgInput.focus(); 
+    } 
+    contextMenu.classList.remove('open'); 
+  };
+  replyClose.onclick=()=>{ 
+    replyTargetId=null; 
+    replyBadge.classList.remove('show'); 
+    msgInput.placeholder='Type a message...'; 
+  };
+  ctxEdit.onclick=()=>{ 
+    const m=allMessages.find(x=>x.id===contextTargetId); 
+    if(m && m.username===currentUser){ 
+      const t=prompt('Edit:',m.text); 
+      if(t?.trim())db.collection('messages').doc(contextTargetId).update({text:t.trim(),edited:true}); 
+    } 
+    contextMenu.classList.remove('open'); 
+  };
+  ctxForward.onclick=()=>{ 
+    const m=allMessages.find(x=>x.id===contextTargetId); 
+    if(m){ 
+      if(m.file){sendMessage(`📨 Forwarded from ${m.username}: ${m.text}`,m.file);} 
+      else {msgInput.value=`📨 Forwarded from ${m.username}: ${m.text}`;msgInput.focus();} 
+    } 
+    contextMenu.classList.remove('open'); 
+  };
+  ctxCopy.onclick=()=>{ 
+    const m=allMessages.find(x=>x.id===contextTargetId); 
+    if(m){navigator.clipboard.writeText(m.text).then(()=>showNotification('System','📋 Copied', null, true));} 
+    contextMenu.classList.remove('open'); 
+  };
+  ctxReadReceipts.onclick=()=>{ 
+    const m=allMessages.find(x=>x.id===contextTargetId); 
+    if(m){const r=m.readBy?m.readBy.filter(x=>x!==currentUser):[]; alert(r.length?`Read by:\n${r.join('\n')}`:'No one read yet');} 
+    contextMenu.classList.remove('open'); 
+  };
+  ctxDelete.onclick=()=>{ 
+    const m=allMessages.find(x=>x.id===contextTargetId); 
+    if(m && (m.username===currentUser||isAdmin)){ 
+      if(confirm('Delete?'))db.collection('messages').doc(contextTargetId).update({deleted:true,deletedAt:firebase.firestore.FieldValue.serverTimestamp()}); 
+    } 
+    contextMenu.classList.remove('open'); 
+  };
 
   // ===== MODAL =====
-  function openModal(){ if(!currentUser)return; modalOverlay.style.display='flex'; loadModalUsers(); updateStats(); if(isAdmin)adminSection.style.display='block'; else adminSection.style.display='none'; currentPass.value='';newPass1.value='';newPass2.value='';passChangeMsg.textContent=''; }
+  function openModal(){ 
+    if(!currentUser)return; 
+    modalOverlay.style.display='flex'; 
+    loadModalUsers(); 
+    updateStats(); 
+    if(isAdmin)adminSection.style.display='block'; 
+    else adminSection.style.display='none'; 
+    currentPass.value='';newPass1.value='';newPass2.value='';passChangeMsg.textContent=''; 
+  }
   function closeModal(){modalOverlay.style.display='none';}
-  function loadModalUsers(){ db.collection('users').get().then(snap=>{ const users=[]; snap.forEach(d=>users.push({id:d.id,...d.data()})); db.collection('status').get().then(ss=>{ const st={}; ss.forEach(d=>st[d.id]=d.data()); let html='', online=0; users.forEach(u=>{ const isOnline=st[u.username]?.online===true; if(isOnline)online++; const color=getAvatarColor(u.username); html+=`<div class="user-item-modal" style="display:flex;justify-content:space-between;align-items:center;padding:6px 10px;border-bottom:1px solid #1f2a3a;"><div class="user-info" style="display:flex;align-items:center;gap:8px;"><div class="avatar-small" style="width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:0.7rem;color:#fff;background:${color};">${getAvatar(u.username)}</div><span style="color:#e9edef;font-size:0.8rem;">${u.username}${u.username===ADMIN_USERNAME?' 👑':''}</span><span class="status-dot-small ${isOnline?'online':'offline'}" style="width:6px;height:6px;border-radius:50%;display:inline-block;background:${isOnline?'#00a884':'#6b7280'};"></span></div>${isAdmin && u.username!==ADMIN_USERNAME?`<button class="remove-user-btn" data-id="${u.id}" style="background:transparent;border:none;color:#e74c3c;cursor:pointer;">✕</button>`:''}</div>`; }); modalUserList.innerHTML=html||'<div style="color:#8696a0;text-align:center;padding:12px;">No members</div>'; modalTotalMembers.textContent=users.length; modalOnlineMembers.textContent=online; document.querySelectorAll('.remove-user-btn').forEach(b=>b.onclick=()=>removeUser(b.dataset.id)); }); }); }
-  function addUser(){ const u=newUser.value.trim(), p=newPass.value.trim(); if(!u||!p){alert('Required');return;} db.collection('users').where('username','==',u).get().then(snap=>{ if(!snap.empty){alert('Exists');return;} db.collection('users').add({username:u,password:p}); newUser.value='';newPass.value=''; loadModalUsers(); showNotification('System',`✅ ${u} added`); }); }
-  function removeUser(id){ if(!confirm('Remove?'))return; db.collection('users').doc(id).delete().then(()=>{loadModalUsers();showNotification('System','🗑️ Removed');}); }
-  function resetAll(){ if(!confirm('Delete ALL?'))return; db.collection('users').get().then(snap=>{const b=db.batch();snap.docs.forEach(d=>{if(d.data().username!==ADMIN_USERNAME)b.delete(d.ref);});return b.commit();}).then(()=>db.collection('messages').get()).then(snap=>{const b=db.batch();snap.docs.forEach(d=>b.delete(d.ref));return b.commit();}).then(()=>db.collection('status').get()).then(snap=>{const b=db.batch();snap.docs.forEach(d=>b.delete(d.ref));return b.commit();}).then(()=>{loadModalUsers();messageContainer.innerHTML='<div style="color:#8696a0;text-align:center;padding:40px;">🔄 All reset</div>';showNotification('System','🗑️ Reset all');}); }
-  settingsBtn.onclick=openModal; chatHeader.onclick=e=>{if(!e.target.closest('button'))openModal();}; modalCloseBtn.onclick=closeModal; modalOverlay.onclick=e=>{if(e.target===modalOverlay)closeModal();};
-  addUserBtn.onclick=addUser; resetAllBtn.onclick=resetAll; changePassBtn.onclick=changePassword;
-  function changePassword(){ const c=currentPass.value.trim(), n1=newPass1.value.trim(), n2=newPass2.value.trim(); passChangeMsg.textContent=''; if(!c||!n1||!n2){passChangeMsg.textContent='❌ All fields required';return;} if(n1.length<4){passChangeMsg.textContent='❌ Min 4 chars';return;} if(n1!==n2){passChangeMsg.textContent='❌ Passwords mismatch';return;} if(currentUser===ADMIN_USERNAME){ if(c!==ADMIN_PASSWORD){passChangeMsg.textContent='❌ Current password incorrect';return;} db.collection('admin').doc('credentials').set({password:n1}).then(()=>{passChangeMsg.style.color='#00a884';passChangeMsg.textContent='✅ Updated';currentPass.value='';newPass1.value='';newPass2.value='';}); return; } db.collection('users').where('username','==',currentUser).get().then(snap=>{ if(snap.empty){passChangeMsg.textContent='❌ User not found';return;} const doc=snap.docs[0], data=doc.data(); if(data.password!==c){passChangeMsg.textContent='❌ Current password incorrect';return;} return doc.ref.update({password:n1}); }).then(()=>{passChangeMsg.style.color='#00a884';passChangeMsg.textContent='✅ Updated';currentPass.value='';newPass1.value='';newPass2.value='';}).catch(()=>passChangeMsg.textContent='❌ Error'); }
+  function loadModalUsers(){ 
+    db.collection('users').get().then(snap=>{ 
+      const users=[]; 
+      snap.forEach(d=>users.push({id:d.id,...d.data()})); 
+      db.collection('status').get().then(ss=>{ 
+        const st={}; 
+        ss.forEach(d=>st[d.id]=d.data()); 
+        let html='', online=0; 
+        users.forEach(u=>{ 
+          const isOnline=st[u.username]?.online===true; 
+          if(isOnline)online++; 
+          const color=getAvatarColor(u.username); 
+          html+=`<div class="user-item-modal" style="display:flex;justify-content:space-between;align-items:center;padding:6px 10px;border-bottom:1px solid #1f2a3a;"><div class="user-info" style="display:flex;align-items:center;gap:8px;"><div class="avatar-small" style="width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:0.7rem;color:#fff;background:${color};">${getAvatar(u.username)}</div><span style="color:#e9edef;font-size:0.8rem;">${u.username}${u.username===ADMIN_USERNAME?' 👑':''}</span><span class="status-dot-small ${isOnline?'online':'offline'}" style="width:6px;height:6px;border-radius:50%;display:inline-block;background:${isOnline?'#00a884':'#6b7280'};"></span></div>${isAdmin && u.username!==ADMIN_USERNAME?`<button class="remove-user-btn" data-id="${u.id}" style="background:transparent;border:none;color:#e74c3c;cursor:pointer;">✕</button>`:''}</div>`; 
+        }); 
+        modalUserList.innerHTML=html||'<div style="color:#8696a0;text-align:center;padding:12px;">No members</div>'; 
+        modalTotalMembers.textContent=users.length; 
+        modalOnlineMembers.textContent=online; 
+        document.querySelectorAll('.remove-user-btn').forEach(b=>b.onclick=()=>removeUser(b.dataset.id)); 
+      }); 
+    }); 
+  }
+  function addUser(){ 
+    const u=newUser.value.trim(), p=newPass.value.trim(); 
+    if(!u||!p){alert('Required');return;} 
+    db.collection('users').where('username','==',u).get().then(snap=>{ 
+      if(!snap.empty){alert('Exists');return;} 
+      db.collection('users').add({username:u,password:p}); 
+      newUser.value='';newPass.value=''; 
+      loadModalUsers(); 
+      showNotification('System',`✅ ${u} added`, null, true); 
+    }); 
+  }
+  function removeUser(id){ 
+    if(!confirm('Remove?'))return; 
+    db.collection('users').doc(id).delete().then(()=>{loadModalUsers();showNotification('System','🗑️ Removed', null, true);}); 
+  }
+  function resetAll(){ 
+    if(!confirm('Delete ALL?'))return; 
+    db.collection('users').get().then(snap=>{const b=db.batch();snap.docs.forEach(d=>{if(d.data().username!==ADMIN_USERNAME)b.delete(d.ref);});return b.commit();}).then(()=>db.collection('messages').get()).then(snap=>{const b=db.batch();snap.docs.forEach(d=>b.delete(d.ref));return b.commit();}).then(()=>db.collection('status').get()).then(snap=>{const b=db.batch();snap.docs.forEach(d=>b.delete(d.ref));return b.commit();}).then(()=>{loadModalUsers();messageContainer.innerHTML='<div style="color:#8696a0;text-align:center;padding:40px;">🔄 All reset</div>';showNotification('System','🗑️ Reset all', null, true);}); 
+  }
+  settingsBtn.onclick=openModal; 
+  chatHeader.onclick=e=>{if(!e.target.closest('button'))openModal();}; 
+  modalCloseBtn.onclick=closeModal; 
+  modalOverlay.onclick=e=>{if(e.target===modalOverlay)closeModal();};
+  addUserBtn.onclick=addUser; 
+  resetAllBtn.onclick=resetAll; 
+  clearChatBtn.onclick=clearChat;
+  changePassBtn.onclick=changePassword;
+  
+  function changePassword(){ 
+    const c=currentPass.value.trim(), n1=newPass1.value.trim(), n2=newPass2.value.trim(); 
+    passChangeMsg.textContent=''; 
+    if(!c||!n1||!n2){passChangeMsg.textContent='❌ All fields required';return;} 
+    if(n1.length<4){passChangeMsg.textContent='❌ Min 4 chars';return;} 
+    if(n1!==n2){passChangeMsg.textContent='❌ Passwords mismatch';return;} 
+    if(currentUser===ADMIN_USERNAME){ 
+      if(c!==ADMIN_PASSWORD){passChangeMsg.textContent='❌ Current password incorrect';return;} 
+      db.collection('admin').doc('credentials').set({password:n1}).then(()=>{passChangeMsg.style.color='#00a884';passChangeMsg.textContent='✅ Updated';currentPass.value='';newPass1.value='';newPass2.value='';}); 
+      return; 
+    } 
+    db.collection('users').where('username','==',currentUser).get().then(snap=>{ 
+      if(snap.empty){passChangeMsg.textContent='❌ User not found';return;} 
+      const doc=snap.docs[0], data=doc.data(); 
+      if(data.password!==c){passChangeMsg.textContent='❌ Current password incorrect';return;} 
+      return doc.ref.update({password:n1}); 
+    }).then(()=>{passChangeMsg.style.color='#00a884';passChangeMsg.textContent='✅ Updated';currentPass.value='';newPass1.value='';newPass2.value='';}).catch(()=>passChangeMsg.textContent='❌ Error'); 
+  }
 
   // ===== EXPORT =====
-  exportChatBtn.onclick=()=>{ const text=allMessages.filter(m=>!m.deleted).map(m=>`${m.username} [${getTime(m.timestamp)}]: ${m.text}${m.file?` (📎 ${m.file.name})`:''}${m.replyTo?` (↩️ ${allMessages.find(x=>x.id===m.replyTo)?.username||''})`:''}`).join('\n'); const blob=new Blob([text],{type:'text/plain'}); const url=URL.createObjectURL(blob); const a=document.createElement('a');a.href=url;a.download=`chat_${new Date().toISOString().slice(0,10)}.txt`;a.click();URL.revokeObjectURL(url);showNotification('System','📤 Exported'); };
+  exportChatBtn.onclick=()=>{ 
+    const text=allMessages.filter(m=>!m.deleted).map(m=>`${m.username} [${getTime(m.timestamp)}]: ${m.text}${m.file?` (📎 ${m.file.name})`:''}${m.replyTo?` (↩️ ${allMessages.find(x=>x.id===m.replyTo)?.username||''})`:''}`).join('\n'); 
+    const blob=new Blob([text],{type:'text/plain'}); 
+    const url=URL.createObjectURL(blob); 
+    const a=document.createElement('a');a.href=url;a.download=`chat_${new Date().toISOString().slice(0,10)}.txt`;a.click();URL.revokeObjectURL(url);showNotification('System','📤 Exported', null, true); 
+  };
 
   // ===== SEARCH =====
   searchToggle.onclick=()=>{searchBar.classList.toggle('open'); if(searchBar.classList.contains('open'))searchInput.focus(); else {searchInput.value='';renderMessages(allMessages);} };
-  searchInput.oninput=function(){ const q=this.value.toLowerCase().trim(); if(!q){renderMessages(allMessages);return;} const filtered=allMessages.filter(m=>m.text.toLowerCase().includes(q)||(m.file&&m.file.name.toLowerCase().includes(q))||m.username.toLowerCase().includes(q)); renderMessages(filtered); };
+  searchInput.oninput=function(){ 
+    const q=this.value.toLowerCase().trim(); 
+    if(!q){renderMessages(allMessages);return;} 
+    const filtered=allMessages.filter(m=>m.text.toLowerCase().includes(q)||(m.file&&m.file.name.toLowerCase().includes(q))||m.username.toLowerCase().includes(q)); 
+    renderMessages(filtered); 
+  };
 
   // ===== EMOJI =====
   const emojis=['😀','😁','😂','🤣','😃','😄','😅','😆','😉','😊','😋','😎','😍','🥰','😘','😗','😙','😚','☺️','🙂','🤗','🤩','🤔','🤨','😐','😑','😶','🙄','😏','😣','😥','😮','🤐','😯','😪','😫','😴','😌','😛','😜','😝','🤤','😒','😓','😔','😕','🙃','🤑','😲','☹️','🙁','😖','😞','😟','😤','😢','😭','😦','😧','😨','😩','🤯','😬','😰','😱','🥵','🥶','😳','🤪','😵','😡','😠','🤬','👍','👎','👊','✊','🤛','🤜','👏','🙌','👐','🤲','🤝','🙏','✌️','🤟','🤘','👌','👈','👉','👆','👇','☝️','✋','🤚','🖐','🖖','👋','🤙','💪','🦾','🖕','✍️','🙇','💁','🙅','🙆','🙋','🤦','🤷','🙎','🙍','💆','💇','🧖','🧏','🤳','💅','👀','🧠','👄','👅','❤️','🧡','💛','💚','💙','💜','🖤','🤍','🤎','💔','❣️','💕','💞','💓','💗','💖','💘','💝','💟','☮️','✝️','☪️','🕉','☸️','✡️','🔯','🕎','☯️','☦️','🛐','⛎','♈','♉','♊','♋','♌','♍','♎','♏','♐','♑','♒','♓','🆔','⚛️','🉑','☢️','☣️','📴','📳','🈶','🈚','🈸','🈺','🈷️','✴️','🆚','💮','🉐','㊙️','㊗️','🈴','🈵','🈹','🈲','🅰️','🅱️','🆎','🆑','🅾️','🆘','❌','⭕','🛑','⛔','📛','🚫','💯','💢','♨️','🚷','🚯','🚳','🚱','🔞','📵','🚭','❗','❕','❓','❔','‼️','⁉️','🔅','🔆','〽️','⚠️','🚸','🔱','⚜️','🔰','♻️','✅','🈯️','💹','❇️','✳️','❎','🌐','💠','Ⓜ️','🌀','💤','🏧','🚾','♿','🅿️','🈳','🈂️','🛂','🛃','🛄','🛅','🚹','🚺','🚼','⚧️','🚻','🚮','🎦','📶','🈁','🔣','ℹ️','🔤','🔡','🔠','🆖','🆗','🆙','🆒','🆕','🆓','0️⃣','1️⃣','2️⃣','3️⃣','4️⃣','5️⃣','6️⃣','7️⃣','8️⃣','9️⃣','🔟','🔢','#️⃣','*️⃣','⏏️','▶️','⏸','⏯','⏹','⏺','⏭','⏮','⏩','⏪','⏫','⏬','◀️','🔼','🔽','➡️','⬅️','⬆️','⬇️','↗️','↘️','↙️','↖️','↕️','↔️','🔄','↪️','↩️','⤴️','⤵️','🔀','🔁','🔂','🟠','🟡','🟢','🔵','🟣','🟤','⚪','⚫','🟥','🟧','🟨','🟩','🟦','🟪','🟫','⬛','⬜','◼️','◻️','◾','◽','▪️','▫️'];
@@ -795,52 +1383,46 @@
   emojiToggle.onclick=()=>emojiPicker.classList.toggle('open');
 
   // ===== INPUT EVENTS =====
-  msgInput.oninput=function(){ if(!currentUser)return; if(this.value.length>0){db.collection('typing').add({user:currentUser,timestamp:firebase.firestore.FieldValue.serverTimestamp()});clearTimeout(window.typingTimeout);window.typingTimeout=setTimeout(()=>{db.collection('typing').orderBy('timestamp','desc').limit(1).get().then(snap=>{snap.forEach(d=>{if(d.data().user===currentUser)d.ref.delete();});});},3000);} else {db.collection('typing').orderBy('timestamp','desc').limit(1).get().then(snap=>{snap.forEach(d=>{if(d.data().user===currentUser)d.ref.delete();});});} const val=this.value, cursor=this.selectionStart, before=val.substring(0,cursor), lastAt=before.lastIndexOf('@'); if(lastAt!==-1 && cursor===lastAt+1){showMentionList();} else if(lastAt!==-1 && cursor>lastAt+1 && val[lastAt+1]!==' '){const typed=before.substring(lastAt+1).toLowerCase(); const items=mentionList.querySelectorAll('.mention-item'); let has=false; items.forEach(item=>{const name=item.querySelector('.mention-name')?.textContent?.toLowerCase()||''; if(name.includes(typed)){item.style.display='flex';has=true;}else item.style.display='none';}); let no=mentionList.querySelector('.no-result'); if(!has){if(!no){const d=document.createElement('div');d.className='no-result';d.textContent='🔍 No users found';mentionList.appendChild(d);}} else {if(no)no.remove();}} else if(lastAt===-1 || cursor<=lastAt+1){mentionList.classList.add('hidden');mentionList.innerHTML='';} };
-  msgInput.onkeydown=e=>{ if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();mentionList.classList.add('hidden');mentionList.innerHTML='';sendMessage();} if(e.key==='Escape'){mentionList.classList.add('hidden');mentionList.innerHTML='';this.blur();} };
-  msgInput.onblur=function(){ if(currentUser){db.collection('typing').orderBy('timestamp','desc').limit(1).get().then(snap=>{snap.forEach(d=>{if(d.data().user===currentUser)d.ref.delete();});});} };
+  msgInput.oninput=function(){ 
+    if(!currentUser)return; 
+    if(this.value.length>0){db.collection('typing').add({user:currentUser,timestamp:firebase.firestore.FieldValue.serverTimestamp()});clearTimeout(window.typingTimeout);window.typingTimeout=setTimeout(()=>{db.collection('typing').orderBy('timestamp','desc').limit(1).get().then(snap=>{snap.forEach(d=>{if(d.data().user===currentUser)d.ref.delete();});});},3000);} 
+    else {db.collection('typing').orderBy('timestamp','desc').limit(1).get().then(snap=>{snap.forEach(d=>{if(d.data().user===currentUser)d.ref.delete();});});} 
+    const val=this.value, cursor=this.selectionStart, before=val.substring(0,cursor), lastAt=before.lastIndexOf('@'); 
+    if(lastAt!==-1 && cursor===lastAt+1){showMentionList();} 
+    else if(lastAt!==-1 && cursor>lastAt+1 && val[lastAt+1]!==' '){const typed=before.substring(lastAt+1).toLowerCase(); const items=mentionList.querySelectorAll('.mention-item'); let has=false; items.forEach(item=>{const name=item.querySelector('.mention-name')?.textContent?.toLowerCase()||''; if(name.includes(typed)){item.style.display='flex';has=true;}else item.style.display='none';}); let no=mentionList.querySelector('.no-result'); if(!has){if(!no){const d=document.createElement('div');d.className='no-result';d.textContent='🔍 No users found';mentionList.appendChild(d);}} else {if(no)no.remove();}} 
+    else if(lastAt===-1 || cursor<=lastAt+1){mentionList.classList.add('hidden');mentionList.innerHTML='';} 
+  };
+  msgInput.onkeydown=e=>{ 
+    if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();mentionList.classList.add('hidden');mentionList.innerHTML='';sendMessage();} 
+    if(e.key==='Escape'){mentionList.classList.add('hidden');mentionList.innerHTML='';this.blur();} 
+  };
+  msgInput.onblur=function(){ 
+    if(currentUser){db.collection('typing').orderBy('timestamp','desc').limit(1).get().then(snap=>{snap.forEach(d=>{if(d.data().user===currentUser)d.ref.delete();});});} 
+  };
   sendBtn.onclick=()=>{mentionList.classList.add('hidden');mentionList.innerHTML='';sendMessage();};
   document.onclick=e=>{if(!msgInput.contains(e.target)&&!mentionList.contains(e.target)){mentionList.classList.add('hidden');mentionList.innerHTML='';}};
 
   // ===== LOGIN BTNS =====
-  loginBtn.onclick=login; loginPass.onkeydown=e=>{if(e.key==='Enter')login();}; loginUser.onkeydown=e=>{if(e.key==='Enter')login();};
-  logoutBtn.onclick=logout; themeBtn.onclick=()=>{ const themes=['dark','light','blue','green','purple']; const cur=document.querySelector('.theme-opt.active')?.dataset.theme||'dark'; const idx=(themes.indexOf(cur)+1)%themes.length; setTheme(themes[idx]); };
+  loginBtn.onclick=login; 
+  loginPass.onkeydown=e=>{if(e.key==='Enter')login();}; 
+  loginUser.onkeydown=e=>{if(e.key==='Enter')login();};
+  logoutBtn.onclick=logout; 
+  themeBtn.onclick=()=>{ 
+    const themes=['dark','light','blue','green','purple']; 
+    const cur=document.querySelector('.theme-opt.active')?.dataset.theme||'dark'; 
+    const idx=(themes.indexOf(cur)+1)%themes.length; 
+    setTheme(themes[idx]); 
+  };
 
   // ===== INIT =====
   db.collection('admin').doc('credentials').get().then(d=>{if(!d.exists)db.collection('admin').doc('credentials').set({password:ADMIN_PASSWORD});});
   if(!checkSession()){loginOverlay.classList.remove('hidden');enableChat(false);}
-
-// 1. Register Service Worker (on page load)
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/Test/sw.js')
-    .then(reg => { console.log('SW registered'); });
-}
-
-// 2. Request permission (after login)
-function enableNotifications() {
-  if (Notification.permission === 'granted') {
-    return true;
-  }
-  Notification.requestPermission();
-}
-
-// 3. Show notification (when message arrives and tab is hidden)
-function notifyNewMessage(sender, message) {
-  if (document.visibilityState === 'visible') return;
-  if (Notification.permission !== 'granted') return;
   
-  new Notification('CLOUDUAT', {
-    body: `${sender}: ${message.substring(0, 100)}`,
-    icon: '/icon-192x192.png'
-  });
-}
-
-// 4. Check visibility when messages arrive
-// In your message listener:
-if (data.username !== currentUser) {
-  if (document.visibilityState === 'hidden') {
-    notifyNewMessage(data.username, data.text);
-  }
-}
+  // Test notification function
+  window.testNotification = function() {
+    showNotification('🔔 TEST', 'This is a test notification from CLOUDUAT!', 'System', true);
+  };
+  console.log('✅ CLOUDUAT loaded! Type testNotification() to test notifications');
 </script>
 </body>
 </html>
