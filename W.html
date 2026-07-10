@@ -90,7 +90,6 @@
     .message-item .file-preview .file-name { color:#e9edef; font-size:0.7rem; }
     body.light-theme .message-item .file-preview .file-name { color:#1a1a1a; }
 
-    /* Reply indicator */
     .message-item .reply-indicator { 
       background:rgba(0,168,132,0.15); 
       border-left:3px solid #00a884; 
@@ -107,7 +106,6 @@
     .message-item .reply-indicator .reply-text { color:#e9edef; }
     body.light-theme .message-item .reply-indicator .reply-text { color:#1a1a1a; }
 
-    /* Mention highlight - RED BOX for attention */
     .message-item.mentioned { 
       border:3px solid #e74c3c !important;
       background:rgba(231,76,60,0.15) !important;
@@ -136,14 +134,12 @@
       text-decoration-color:#e74c3c;
       text-decoration-thickness:2px;
     }
-    /* Mention pulse animation */
     @keyframes mentionPulse {
       0% { transform:scale(1); }
       40% { transform:scale(1.03); box-shadow:0 0 40px rgba(231,76,60,0.4); }
       70% { transform:scale(0.98); }
       100% { transform:scale(1); }
     }
-    /* Glowing border for mentioned messages */
     .message-item.mentioned::after {
       content: '';
       position: absolute;
@@ -164,7 +160,6 @@
       100% { background-position: 0% 50%; }
     }
 
-    /* Reactions */
     .message-item .reactions { display:flex; gap:2px; flex-wrap:wrap; margin-top:2px; }
     .message-item .reactions .reaction { 
       background:rgba(255,255,255,0.08); 
@@ -209,7 +204,6 @@
     .message-item .quick-reactions span { font-size:1rem; cursor:pointer; padding:2px 4px; border-radius:50%; transition:0.2s; }
     .message-item .quick-reactions span:hover { transform:scale(1.3); background:rgba(0,168,132,0.2); }
 
-    /* Scroll to bottom button */
     .scroll-to-bottom {
       position:absolute;
       bottom:80px;
@@ -359,7 +353,6 @@
     .reaction-viewer-box .rv-item .rv-users { color:#e9edef; font-size:0.85rem; }
     body.light-theme .reaction-viewer-box .rv-item .rv-users { color:#1a1a1a; }
 
-    /* Mobile responsive */
     @media (max-width:768px) { 
       .message-item { max-width:88%; } 
       .chat-header .header-actions .user-badge { font-size:0.6rem; } 
@@ -555,6 +548,11 @@
   let newMessageCount = 0;
   let isScrolledToBottom = true;
   let notificationPermission = false;
+  
+  // ===== NOTIFICATION TRACKING =====
+  let notifiedMessageIds = new Set(); // Track which messages have already triggered notifications
+  let lastNotificationTime = 0; // Throttle notifications to avoid spam
+  const NOTIFICATION_THROTTLE_MS = 500; // Minimum time between notifications
     
   // DOM refs
   const $ = id => document.getElementById(id);
@@ -587,16 +585,12 @@
   function getFileIcon(n){const t=getFileType(n);return {image:'🖼️',video:'🎬',document:'📄',other:'📎'}[t]||'📎';}
 
   // ===== SESSION =====
-  function checkSession(){ const s=localStorage.getItem('clouduat_session'); if(s){ const d=JSON.parse(s); if(d.username && Date.now()-d.timestamp<86400000){ currentUser=d.username; isAdmin=(currentUser===ADMIN_USERNAME); loginOverlay.classList.add('hidden'); enableChat(true); startListening(); updateUserBadge(); if(isAdmin){db.collection('status').doc(currentUser).set({online:true,lastSeen:firebase.firestore.FieldValue.serverTimestamp()});} showNotification('System','👋 Welcome back!'); // Setup notifications after login
-          setTimeout(() => enableNotifications(), 1500);
-          return true;}} return false; }
+  function checkSession(){ const s=localStorage.getItem('clouduat_session'); if(s){ const d=JSON.parse(s); if(d.username && Date.now()-d.timestamp<86400000){ currentUser=d.username; isAdmin=(currentUser===ADMIN_USERNAME); loginOverlay.classList.add('hidden'); enableChat(true); startListening(); updateUserBadge(); if(isAdmin){db.collection('status').doc(currentUser).set({online:true,lastSeen:firebase.firestore.FieldValue.serverTimestamp()});} showNotification('System','👋 Welcome back!'); setTimeout(() => enableNotifications(), 1500); return true;}} return false; }
   function saveSession(u){localStorage.setItem('clouduat_session',JSON.stringify({username:u,timestamp:Date.now()}));}
   function clearSession(){localStorage.removeItem('clouduat_session');}
   function updateUserBadge(){if(currentUser)currentUserDisplay.textContent=currentUser===ADMIN_USERNAME?'Admin':currentUser;}
 
   // ===== NOTIFICATION FUNCTIONS =====
-  
-  // Register Service Worker - FIXED PATH
   function registerServiceWorker() {
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/Test/sw.js')
@@ -606,14 +600,12 @@
         })
         .catch(error => {
           console.error('❌ Service Worker registration failed:', error);
-          // Service worker failed - we'll still use fallback notifications
         });
     } else {
       console.log('❌ Service Worker not supported in this browser');
     }
   }
 
-  // Enable notifications
   function enableNotifications() {
     if (!('Notification' in window)) {
       console.log('❌ Browser doesn\'t support notifications');
@@ -632,7 +624,6 @@
       return false;
     }
 
-    // Request permission
     Notification.requestPermission().then(permission => {
       if (permission === 'granted') {
         notificationPermission = true;
@@ -646,12 +637,9 @@
     });
   }
 
-  // Show notification (works in background!) - FIXED
   function showNotification(title, body, sender = null, forceInApp = false) {
-    // Check if this is a browser notification or in-app
     const isTabHidden = document.visibilityState === 'hidden';
     
-    // If tab is hidden and notifications are enabled, show browser notification
     if (isTabHidden && Notification.permission === 'granted' && !forceInApp) {
       try {
         const options = {
@@ -676,7 +664,6 @@
           ]
         };
 
-        // Use Service Worker if available
         if (window.swRegistration && window.swRegistration.active) {
           window.swRegistration.active.postMessage({
             type: 'SHOW_NOTIFICATION',
@@ -686,12 +673,10 @@
           return;
         }
 
-        // Fallback to regular notification
         const notification = new Notification(title || 'CLOUDUAT', options);
         notification.onclick = function() {
           window.focus();
           notification.close();
-          // Focus the input field
           setTimeout(() => {
             if (msgInput) msgInput.focus();
           }, 500);
@@ -703,8 +688,6 @@
       }
     }
 
-    // Show in-app notification (bottom-right corner)
-    // This is your existing notification code
     try {
       notifSender.textContent = sender || 'System';
       const msg = body || 'New message';
@@ -731,7 +714,6 @@
       updateUserBadge(); 
       db.collection('status').doc(currentUser).set({online:true,lastSeen:firebase.firestore.FieldValue.serverTimestamp()}); 
       showNotification('System','👑 Welcome Admin!', null, true);
-      // Enable notifications
       setTimeout(() => enableNotifications(), 1500);
       return; 
     } 
@@ -748,7 +730,6 @@
         updateUserBadge(); 
         db.collection('status').doc(currentUser).set({online:true,lastSeen:firebase.firestore.FieldValue.serverTimestamp()}); 
         showNotification('System',`👋 Welcome ${data.username}!`, null, true);
-        // Enable notifications
         setTimeout(() => enableNotifications(), 1500);
       } else {loginError.textContent='❌ Invalid password';} 
     }).catch(()=>loginError.textContent='❌ Error'); 
@@ -764,6 +745,9 @@
     if(messageUnsubscribe){messageUnsubscribe();messageUnsubscribe=null;} 
     if(usersUnsubscribe){usersUnsubscribe();usersUnsubscribe=null;} 
     if(typingUnsubscribe){typingUnsubscribe();typingUnsubscribe=null;} 
+    // Clear notification tracking
+    notifiedMessageIds.clear();
+    lastNotificationTime = 0;
     messageContainer.innerHTML='<div style="color:#8696a0;text-align:center;padding:40px 20px;"><div style="font-size:2.5rem;">👋</div>Welcome to CLOUDUAT<br><span style="font-size:0.8rem;">Start typing...</span></div>'; 
     typingIndicator.textContent=''; 
     memberCount.textContent='Loading...'; 
@@ -782,26 +766,46 @@
     if(messageUnsubscribe)messageUnsubscribe(); 
     messageUnsubscribe=db.collection('messages').orderBy('timestamp','asc').onSnapshot(snap=>{ 
       const msgs=[]; 
+      const now = Date.now();
+      
       snap.forEach(doc=>{ 
         const msgData = doc.data();
         const data = {id:doc.id, ...msgData}; 
         if(!data.scheduledAt || data.scheduledAt.toDate()<=new Date()){ 
           if(!data.deleted)msgs.push(data); 
         } 
-        // Check for new messages for notification - FIXED
-        if(msgData.username && msgData.username !== currentUser && !msgData.deleted && msgData.timestamp) {
-          // Show notification for new message
-          const msgText = msgData.text || '📎 Shared a file';
-          const senderName = msgData.username || 'Someone';
-          if(document.visibilityState === 'hidden' && Notification.permission === 'granted') {
-            // Browser notification
-            showNotification('CLOUDUAT', `${senderName}: ${msgText.substring(0, 100)}`, senderName);
-          } else {
-            // In-app notification
-            showNotification('CLOUDUAT', `${senderName}: ${msgText.substring(0, 100)}`, senderName, true);
+        
+        // ONLY show notification for NEW messages that meet all criteria
+        if(msgData.username && 
+           msgData.username !== currentUser && 
+           !msgData.deleted && 
+           msgData.timestamp && 
+           msgData.id && 
+           !notifiedMessageIds.has(msgData.id)) { 
+          
+          // Check if this message is actually new (within last 30 seconds)
+          const msgTime = msgData.timestamp.toDate ? msgData.timestamp.toDate().getTime() : msgData.timestamp;
+          if (msgTime && (now - msgTime < 30000)) { 
+            const msgText = msgData.text || '📎 Shared a file';
+            const senderName = msgData.username || 'Someone';
+            
+            // Throttle notifications to avoid spam
+            const timeSinceLastNotif = now - lastNotificationTime;
+            if (timeSinceLastNotif >= NOTIFICATION_THROTTLE_MS) {
+              if(document.visibilityState === 'hidden' && Notification.permission === 'granted') {
+                showNotification('CLOUDUAT', `${senderName}: ${msgText.substring(0, 100)}`, senderName);
+              } else {
+                showNotification('CLOUDUAT', `${senderName}: ${msgText.substring(0, 100)}`, senderName, true);
+              }
+              lastNotificationTime = now;
+            }
+            
+            // Mark this message as notified
+            notifiedMessageIds.add(msgData.id);
           }
         }
       }); 
+      
       allMessages=msgs; 
       renderMessages(msgs); 
       updateMemberCount(); 
@@ -809,6 +813,7 @@
       updateReadStatus(); 
       updateStats(); 
     }); 
+    
     if(usersUnsubscribe)usersUnsubscribe(); 
     usersUnsubscribe=db.collection('users').onSnapshot(()=>updateMemberCount()); 
     if(typingUnsubscribe)typingUnsubscribe(); 
@@ -827,7 +832,6 @@
         users.forEach((user,index)=>{ 
           const color=getAvatarColor(user); 
           html+=`<div class="typing-avatar" style="background:${color}">${getAvatar(user)}</div><span class="typing-name">${user}</span>`; 
-          if(index<2){} 
         }); 
         if(users.length>2)html+=`<span>+${users.length-2}</span>`; 
         html+=`<div class="typing-dots"><span></span><span></span><span></span></div>`; 
@@ -894,11 +898,9 @@
   messageContainer.addEventListener('scroll',checkScrollPosition);
   scrollToBottom.onclick=scrollToBottomNow;
 
-  // ===== VISIBILITY CHANGE HANDLER =====
   document.addEventListener('visibilitychange', function() {
     if (document.visibilityState === 'visible') {
       console.log('👀 Tab is now visible');
-      // Update unread count on title
       if (unreadBadge && unreadBadge.textContent !== '0' && unreadBadge.style.display !== 'none') {
         document.title = `(${unreadBadge.textContent}) CLOUDUAT`;
       } else {
@@ -968,7 +970,6 @@
     } 
   }
 
-  // ===== GET REACTION USERS =====
   function getReactionUsers(messageId, emoji){ 
     const m=allMessages.find(x=>x.id===messageId); 
     if(!m||!m.reactions)return ''; 
@@ -976,7 +977,6 @@
     return users.length ? users.join(', ') : ''; 
   }
 
-  // ===== REACTION VIEWER =====
   window.showReactionViewer=function(messageId, emoji){ 
     const m=allMessages.find(x=>x.id===messageId); 
     if(!m||!m.reactions)return; 
@@ -988,20 +988,17 @@
   rvClose.onclick=()=>reactionViewerModal.classList.remove('open');
   reactionViewerModal.onclick=e=>{if(e.target===reactionViewerModal)reactionViewerModal.classList.remove('open');};
 
-  // ===== SCROLL TO MESSAGE =====
   window.scrollToMessage=function(id){ 
     const el=document.querySelector(`.message-item[data-id="${id}"]`); 
     if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.transform='scale(1.02)';setTimeout(()=>el.style.transform='',1000);} 
   };
 
-  // ===== REACTIONS =====
   window.addReaction=function(id,emoji){ 
     if(!currentUser)return; 
     const ref=db.collection('messages').doc(id); 
     ref.update({[`reactions.${currentUser}`]:emoji}).catch(()=>ref.set({[`reactions.${currentUser}`]:emoji},{merge:true})); 
   };
 
-  // ===== MENTION =====
   window.insertMention=function(u){ 
     msgInput.value+=`@${u} `; 
     msgInput.focus(); 
@@ -1044,7 +1041,6 @@
     }); 
   }
 
-  // ===== CLEAR CHAT =====
   function clearChat(){
     if(!isAdmin){
       showNotification('System','⛔ Only admin can clear chat', null, true);
@@ -1060,6 +1056,8 @@
       });
       return batch.commit();
     }).then(()=>{
+      notifiedMessageIds.clear();
+      lastNotificationTime = 0;
       showNotification('System',`🗑️ All chat cleared by ${currentUser}`, null, true);
       allMessages = [];
       renderMessages([]);
@@ -1069,7 +1067,6 @@
     });
   }
 
-  // ===== SEND MESSAGE =====
   function sendMessage(text=null, fileData=null, scheduledTime=null){ 
     if(!currentUser)return; 
     if(!text && !fileData){text=msgInput.value.trim(); if(!text)return;} 
@@ -1089,7 +1086,6 @@
     emojiPicker.classList.remove('open'); 
   }
 
-  // ===== FILE & CAMERA =====
   fileBtn.onclick=()=>fileInput.click();
   fileInput.onchange=e=>{ 
     if(e.target.files && e.target.files.length > 0){ 
@@ -1129,7 +1125,6 @@
     cameraInput.value=''; 
   };
 
-  // ===== THEMES =====
   const themeMap={dark:'', light:'light-theme', blue:'theme-blue', green:'theme-green', purple:'theme-purple'};
   function setTheme(t){ 
     document.body.className=document.body.className.split(' ').filter(c=>!['light-theme','theme-blue','theme-green','theme-purple'].includes(c)).join(''); 
@@ -1141,7 +1136,6 @@
   const savedTheme=localStorage.getItem('chat_theme')||'dark'; 
   setTheme(savedTheme);
 
-  // ===== SCHEDULE =====
   scheduleBtn.onclick=()=>{ 
     if(!currentUser)return; 
     const t=msgInput.value.trim(); 
@@ -1160,7 +1154,6 @@
   };
   scheduleCancel.onclick=()=>scheduleModal.classList.remove('open');
 
-  // ===== GALLERY =====
   galleryBtn.onclick=()=>{ 
     const media=allMessages.filter(m=>m.file && !m.deleted && ['image','video'].includes(getFileType(m.file.name))); 
     if(!media.length){galleryGrid.innerHTML='<div class="no-media">No media</div>';}else{ 
@@ -1175,7 +1168,6 @@
   };
   galleryClose.onclick=()=>galleryModal.classList.remove('open');
 
-  // ===== DOC PREVIEW =====
   window.previewFile=function(id){ 
     const m=allMessages.find(x=>x.id===id); 
     if(!m||!m.file)return; 
@@ -1203,7 +1195,6 @@
   };
   docPreviewClose.onclick=()=>docPreviewModal.classList.remove('open');
 
-  // ===== CONTEXT MENU =====
   messageContainer.oncontextmenu=e=>{ 
     const item=e.target.closest('.message-item'); 
     if(item){ 
@@ -1279,7 +1270,6 @@
     contextMenu.classList.remove('open'); 
   };
 
-  // ===== MODAL =====
   function openModal(){ 
     if(!currentUser)return; 
     modalOverlay.style.display='flex'; 
@@ -1358,7 +1348,6 @@
     }).then(()=>{passChangeMsg.style.color='#00a884';passChangeMsg.textContent='✅ Updated';currentPass.value='';newPass1.value='';newPass2.value='';}).catch(()=>passChangeMsg.textContent='❌ Error'); 
   }
 
-  // ===== EXPORT =====
   exportChatBtn.onclick=()=>{ 
     const text=allMessages.filter(m=>!m.deleted).map(m=>`${m.username} [${getTime(m.timestamp)}]: ${m.text}${m.file?` (📎 ${m.file.name})`:''}${m.replyTo?` (↩️ ${allMessages.find(x=>x.id===m.replyTo)?.username||''})`:''}`).join('\n'); 
     const blob=new Blob([text],{type:'text/plain'}); 
@@ -1366,7 +1355,6 @@
     const a=document.createElement('a');a.href=url;a.download=`chat_${new Date().toISOString().slice(0,10)}.txt`;a.click();URL.revokeObjectURL(url);showNotification('System','📤 Exported', null, true); 
   };
 
-  // ===== SEARCH =====
   searchToggle.onclick=()=>{searchBar.classList.toggle('open'); if(searchBar.classList.contains('open'))searchInput.focus(); else {searchInput.value='';renderMessages(allMessages);} };
   searchInput.oninput=function(){ 
     const q=this.value.toLowerCase().trim(); 
@@ -1375,12 +1363,10 @@
     renderMessages(filtered); 
   };
 
-  // ===== EMOJI =====
   const emojis=['😀','😁','😂','🤣','😃','😄','😅','😆','😉','😊','😋','😎','😍','🥰','😘','😗','😙','😚','☺️','🙂','🤗','🤩','🤔','🤨','😐','😑','😶','🙄','😏','😣','😥','😮','🤐','😯','😪','😫','😴','😌','😛','😜','😝','🤤','😒','😓','😔','😕','🙃','🤑','😲','☹️','🙁','😖','😞','😟','😤','😢','😭','😦','😧','😨','😩','🤯','😬','😰','😱','🥵','🥶','😳','🤪','😵','😡','😠','🤬','👍','👎','👊','✊','🤛','🤜','👏','🙌','👐','🤲','🤝','🙏','✌️','🤟','🤘','👌','👈','👉','👆','👇','☝️','✋','🤚','🖐','🖖','👋','🤙','💪','🦾','🖕','✍️','🙇','💁','🙅','🙆','🙋','🤦','🤷','🙎','🙍','💆','💇','🧖','🧏','🤳','💅','👀','🧠','👄','👅','❤️','🧡','💛','💚','💙','💜','🖤','🤍','🤎','💔','❣️','💕','💞','💓','💗','💖','💘','💝','💟','☮️','✝️','☪️','🕉','☸️','✡️','🔯','🕎','☯️','☦️','🛐','⛎','♈','♉','♊','♋','♌','♍','♎','♏','♐','♑','♒','♓','🆔','⚛️','🉑','☢️','☣️','📴','📳','🈶','🈚','🈸','🈺','🈷️','✴️','🆚','💮','🉐','㊙️','㊗️','🈴','🈵','🈹','🈲','🅰️','🅱️','🆎','🆑','🅾️','🆘','❌','⭕','🛑','⛔','📛','🚫','💯','💢','♨️','🚷','🚯','🚳','🚱','🔞','📵','🚭','❗','❕','❓','❔','‼️','⁉️','🔅','🔆','〽️','⚠️','🚸','🔱','⚜️','🔰','♻️','✅','🈯️','💹','❇️','✳️','❎','🌐','💠','Ⓜ️','🌀','💤','🏧','🚾','♿','🅿️','🈳','🈂️','🛂','🛃','🛄','🛅','🚹','🚺','🚼','⚧️','🚻','🚮','🎦','📶','🈁','🔣','ℹ️','🔤','🔡','🔠','🆖','🆗','🆙','🆒','🆕','🆓','0️⃣','1️⃣','2️⃣','3️⃣','4️⃣','5️⃣','6️⃣','7️⃣','8️⃣','9️⃣','🔟','🔢','#️⃣','*️⃣','⏏️','▶️','⏸','⏯','⏹','⏺','⏭','⏮','⏩','⏪','⏫','⏬','◀️','🔼','🔽','➡️','⬅️','⬆️','⬇️','↗️','↘️','↙️','↖️','↕️','↔️','🔄','↪️','↩️','⤴️','⤵️','🔀','🔁','🔂','🟠','🟡','🟢','🔵','🟣','🟤','⚪','⚫','🟥','🟧','🟨','🟩','🟦','🟪','🟫','⬛','⬜','◼️','◻️','◾','◽','▪️','▫️'];
   emojis.forEach(e=>{const s=document.createElement('span');s.textContent=e;s.onclick=()=>{msgInput.value+=e;msgInput.focus();emojiPicker.classList.remove('open');};emojiPicker.appendChild(s);});
   emojiToggle.onclick=()=>emojiPicker.classList.toggle('open');
 
-  // ===== INPUT EVENTS =====
   msgInput.oninput=function(){ 
     if(!currentUser)return; 
     if(this.value.length>0){db.collection('typing').add({user:currentUser,timestamp:firebase.firestore.FieldValue.serverTimestamp()});clearTimeout(window.typingTimeout);window.typingTimeout=setTimeout(()=>{db.collection('typing').orderBy('timestamp','desc').limit(1).get().then(snap=>{snap.forEach(d=>{if(d.data().user===currentUser)d.ref.delete();});});},3000);} 
@@ -1400,7 +1386,6 @@
   sendBtn.onclick=()=>{mentionList.classList.add('hidden');mentionList.innerHTML='';sendMessage();};
   document.onclick=e=>{if(!msgInput.contains(e.target)&&!mentionList.contains(e.target)){mentionList.classList.add('hidden');mentionList.innerHTML='';}};
 
-  // ===== LOGIN BTNS =====
   loginBtn.onclick=login; 
   loginPass.onkeydown=e=>{if(e.key==='Enter')login();}; 
   loginUser.onkeydown=e=>{if(e.key==='Enter')login();};
@@ -1412,11 +1397,9 @@
     setTheme(themes[idx]); 
   };
 
-  // ===== INIT =====
   db.collection('admin').doc('credentials').get().then(d=>{if(!d.exists)db.collection('admin').doc('credentials').set({password:ADMIN_PASSWORD});});
   if(!checkSession()){loginOverlay.classList.remove('hidden');enableChat(false);}
   
-  // Test notification function
   window.testNotification = function() {
     showNotification('🔔 TEST', 'This is a test notification from CLOUDUAT!', 'System', true);
   };
